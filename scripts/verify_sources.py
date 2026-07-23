@@ -29,7 +29,17 @@ STALE_AFTER_DAYS = 14  # a feed that resolves but hasn't posted in 2 weeks is su
 def _check_rss(name: str, url: str, timeout: float = 15.0) -> tuple[bool, str]:
     try:
         resp = httpx.get(url, timeout=timeout, follow_redirects=True, headers=RSS_REQUEST_HEADERS)
+        redirect_note = ""
+        if resp.history:
+            chain = " -> ".join(str(r.url) for r in resp.history) + f" -> {resp.url}"
+            redirect_note = f" [redirected: {chain}]"
         resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        chain = ""
+        if exc.response.history:
+            chain = " -> ".join(str(r.url) for r in exc.response.history) + f" -> {exc.response.url}"
+            chain = f" — redirected via: {chain}"
+        return False, f"HTTP fetch failed: {exc}{chain}"
     except Exception as exc:
         return False, f"HTTP fetch failed: {exc}"
 
@@ -49,12 +59,12 @@ def _check_rss(name: str, url: str, timeout: float = 15.0) -> tuple[bool, str]:
                     newest = candidate
 
     if newest is None:
-        return True, f"{len(parsed.entries)} entries, but none had a parseable date — spot-check manually"
+        return True, f"{len(parsed.entries)} entries, but none had a parseable date — spot-check manually{redirect_note}"
 
     age_days = (datetime.now(timezone.utc) - newest).days
     if age_days > STALE_AFTER_DAYS:
-        return True, f"{len(parsed.entries)} entries, but newest is {age_days} days old — feed may be stale/dead"
-    return True, f"{len(parsed.entries)} entries, newest {age_days} day(s) old — looks live"
+        return True, f"{len(parsed.entries)} entries, but newest is {age_days} days old — feed may be stale/dead{redirect_note}"
+    return True, f"{len(parsed.entries)} entries, newest {age_days} day(s) old — looks live{redirect_note}"
 
 
 def _check_gdelt(timeout: float = 15.0) -> tuple[bool, str]:
@@ -71,31 +81,37 @@ def _check_gdelt(timeout: float = 15.0) -> tuple[bool, str]:
 
 def main() -> int:
     cfg = yaml.safe_load(SOURCES_PATH.read_text())
-    results: list[tuple[str, bool, str]] = []
+    # status per result: "OK" | "FAIL" | "SKIPPED" — SKIPPED (disabled in
+    # config, e.g. LiveUAMap's free RSS route redirecting to a paid-API
+    # promo page) doesn't count against the overall pass/fail.
+    results: list[tuple[str, str, str]] = []
 
     ok, detail = _check_gdelt()
-    results.append(("GDELT", ok, detail))
+    results.append(("GDELT", "OK" if ok else "FAIL", detail))
 
     liveuamap = cfg.get("liveuamap", {})
     if liveuamap.get("feed_url"):
-        ok, detail = _check_rss("LiveUAMap", liveuamap["feed_url"])
-        results.append(("LiveUAMap", ok, detail))
+        if liveuamap.get("enabled", True):
+            ok, detail = _check_rss("LiveUAMap", liveuamap["feed_url"])
+            results.append(("LiveUAMap", "OK" if ok else "FAIL", detail))
+        else:
+            results.append(("LiveUAMap", "SKIPPED", "disabled in config/sources.yaml — see comment there"))
 
     for feed in cfg.get("rss_feeds", []):
         ok, detail = _check_rss(feed["name"], feed["url"])
-        results.append((feed["name"], ok, detail))
+        results.append((feed["name"], "OK" if ok else "FAIL", detail))
 
-    print(f"{'SOURCE':<28}{'STATUS':<8}DETAIL")
+    print(f"{'SOURCE':<28}{'STATUS':<10}DETAIL")
     all_ok = True
-    for name, ok, detail in results:
-        status = "OK" if ok else "FAIL"
-        all_ok = all_ok and ok
-        print(f"{name:<28}{status:<8}{detail}")
+    for name, status, detail in results:
+        if status == "FAIL":
+            all_ok = False
+        print(f"{name:<28}{status:<10}{detail}")
 
     if not all_ok:
-        print("\nOne or more sources failed to resolve. Fix config/sources.yaml before relying on them.")
+        print("\nOne or more enabled sources failed to resolve. Fix config/sources.yaml before relying on them.")
         return 1
-    print("\nAll sources resolved. Spot-check the 'looks live' vs. 'may be stale' notes above too.")
+    print("\nAll enabled sources resolved. Spot-check the 'looks live' vs. 'may be stale' notes above too.")
     return 0
 
 

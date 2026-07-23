@@ -83,6 +83,21 @@ reaches the pipeline indirectly via GDELT's GKG layer). Tehran Times is
 included specifically because the spec calls it out as the source that
 makes the stated-vs-revealed-behavior divergence check actually checkable.
 
+**LiveUAMap is currently disabled** (`liveuamap.enabled: false` in
+`sources.yaml`) — confirmed live (2026-07-23) that its free `/rss` route
+302-redirects to a paid-API signup page (`.../promo/api`) regardless of
+request headers; it's not bot-blocking, the free tier is gone. This is the
+exact contingency the spec names for LiveUAMap ("not needed to start —
+only revisit if the free RSS feed proves too thin"). `agents/middle_east/
+ingest.py` skips it cleanly (logs and moves on) while disabled. To
+re-enable: get a LiveUAMap API key/endpoint, update `feed_url` (and
+whatever auth the paid tier needs — the current fetcher assumes a plain
+RSS GET), flip `enabled: true`, and re-run `scripts/verify_sources.py`.
+Phase 1 runs on the remaining 5 sources (GDELT, Times of Israel, Al
+Jazeera, Tehran Times, plus GDELT's own rapid 15-minute update cadence
+partially covering the "fastest-updating source" gap LiveUAMap was meant
+to fill).
+
 ## The effort-tier substitution (read this if the numbers look off)
 
 The build spec's Section 5 describes a scaled *token budget* for extended
@@ -167,6 +182,10 @@ trusting daily use:**
 
 1. `python scripts/verify_sources.py` — confirm GDELT and all three RSS
    feeds actually resolve and return current items from your network.
+   **Already done and passing as of 2026-07-23**: GDELT + Times of Israel +
+   Al Jazeera + Tehran Times all OK; LiveUAMap confirmed dead (redirects
+   to a paid-API promo page) and is now disabled in `sources.yaml` — see
+   the Configuration section above. Re-run after any source config change.
 2. A real end-to-end run: `ollama serve` (with `qwen2.5:14b` pulled) running
    in the background, then `python -m agents.middle_east.run` with a real
    `ANTHROPIC_API_KEY` in `.env`. Check that:

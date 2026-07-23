@@ -26,9 +26,13 @@ def run_ingest() -> list[RawItem]:
     logger.info("GDELT: %d items", len(gdelt_items))
     items.extend(gdelt_items)
 
-    liveuamap_items = fetch_liveuamap(cfg.get("liveuamap", {}))
-    logger.info("LiveUAMap: %d items", len(liveuamap_items))
-    items.extend(liveuamap_items)
+    liveuamap_cfg = cfg.get("liveuamap", {})
+    if liveuamap_cfg.get("enabled", True):
+        liveuamap_items = fetch_liveuamap(liveuamap_cfg)
+        logger.info("LiveUAMap: %d items", len(liveuamap_items))
+        items.extend(liveuamap_items)
+    else:
+        logger.info("LiveUAMap: skipped (disabled in config/sources.yaml — see comment there for why)")
 
     rss_items = fetch_all_rss(cfg)
     logger.info("RSS: %d items", len(rss_items))

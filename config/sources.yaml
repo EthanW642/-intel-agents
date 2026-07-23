@@ -68,10 +68,21 @@ liveuamap:
   # High-recall, lower-reliability rapid-update layer (spec 4.1). Treat
   # exactly like any other RSS source at triage time — no whitelisting past
   # triage. Polled more frequently than the narrative RSS layer.
+  #
+  # DISABLED as of 2026-07-23 verification: the free /rss route now
+  # returns a 302 redirect to https://israelpalestine.liveuamap.com/promo/api
+  # (a signup page for their paid API tier) regardless of request headers —
+  # confirmed via `curl -D -` showing the raw redirect, not a bot-wall.
+  # This is the exact contingency the spec already calls out: "A paid
+  # LiveUAMap API tier exists ... not needed to start — only revisit if
+  # the free RSS feed proves too thin." The free tier isn't thin here, it's
+  # gone. ingest.py skips this source entirely while enabled: false.
+  # Re-enable (and update feed_url if the paid tier uses a different one)
+  # if/when a LiveUAMap API key is obtained — see README.
+  enabled: false
   feed_url: "https://israelpalestine.liveuamap.com/rss"
   poll_interval_minutes: 20
   tier: 4  # rapid/uncorroborated — needs Tier 1/2 corroboration (spec 5.1)
-  # UNVERIFIED live from this build environment.
 
 rss_feeds:
   # Narrative/context layer. Phase 1 uses 3 of the spec's 6 named sources.
