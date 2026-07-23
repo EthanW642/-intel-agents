@@ -18,6 +18,9 @@ import feedparser
 import httpx
 import yaml
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from agents.middle_east.sources import RSS_REQUEST_HEADERS  # noqa: E402 — see sys.path insert above
+
 ROOT = Path(__file__).parent.parent
 SOURCES_PATH = ROOT / "config" / "sources.yaml"
 STALE_AFTER_DAYS = 14  # a feed that resolves but hasn't posted in 2 weeks is suspicious, not dead
@@ -25,7 +28,7 @@ STALE_AFTER_DAYS = 14  # a feed that resolves but hasn't posted in 2 weeks is su
 
 def _check_rss(name: str, url: str, timeout: float = 15.0) -> tuple[bool, str]:
     try:
-        resp = httpx.get(url, timeout=timeout, follow_redirects=True)
+        resp = httpx.get(url, timeout=timeout, follow_redirects=True, headers=RSS_REQUEST_HEADERS)
         resp.raise_for_status()
     except Exception as exc:
         return False, f"HTTP fetch failed: {exc}"

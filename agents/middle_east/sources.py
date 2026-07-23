@@ -19,6 +19,19 @@ logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "sources.yaml"
 
+# Some feeds (LiveUAMap confirmed; likely others) 403 requests that don't
+# look like a browser — no default User-Agent, no Accept header. This is
+# the single source of truth for those headers; scripts/verify_sources.py
+# imports it too, so the pre-flight check and real ingestion never drift
+# apart on this.
+RSS_REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/rss+xml, application/xml, text/xml, */*;q=0.8",
+}
+
 
 @dataclass
 class RawItem:
@@ -120,7 +133,7 @@ def fetch_rss(name: str, url: str, tier: int | None = None, timeout: float = 15.
     5.1's source reliability tiering) is carried through in raw_metadata so
     the analysis prompt can apply the tiering rule."""
     try:
-        resp = httpx.get(url, timeout=timeout, follow_redirects=True)
+        resp = httpx.get(url, timeout=timeout, follow_redirects=True, headers=RSS_REQUEST_HEADERS)
         resp.raise_for_status()
         parsed = feedparser.parse(resp.content)
     except Exception:
