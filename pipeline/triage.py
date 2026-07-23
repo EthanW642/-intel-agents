@@ -1,0 +1,137 @@
+"""Stage 2b — local relevance triage via Ollama (spec section 5, Call 1).
+
+Runs entirely against a local Ollama server — no Anthropic API call happens
+in this stage. Batches surviving dedup'd items, asks the local model to
+score each 0-10 against the domain watchlist/theses, and cuts everything
+below the configured threshold.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+
+import httpx
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+
+logger = logging.getLogger(__name__)
+
+TRIAGE_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "triage_system.md"
+BATCH_SIZE = 20
+
+
+class TriageError(Exception):
+    pass
+
+
+def _load_system_prompt() -> str:
+    return TRIAGE_PROMPT_PATH.read_text()
+
+
+def _build_context_block(entities: list, theses: list) -> str:
+    entity_lines = "\n".join(f"- {e['name']} ({e['type']}): {e.get('notes', '')}" for e in entities)
+    thesis_lines = "\n".join(f"- {t['title']}: {t['statement'].strip()}" for t in theses)
+    return (
+        f"## Standing watchlist entities\n{entity_lines}\n\n"
+        f"## Active standing theses\n{thesis_lines}\n"
+    )
+
+
+def _build_batch_block(items: list) -> str:
+    lines = []
+    for i, item in enumerate(items):
+        lines.append(
+            f"[{i}] title: {item.title}\nsource: {item.source}\ndate: {item.published}\n"
+            f"excerpt: {item.text[:600]}\n"
+        )
+    return "\n".join(lines)
+
+
+@retry(
+    retry=retry_if_exception_type(httpx.HTTPError),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    reraise=True,
+)
+def _call_ollama(host: str, model: str, system_prompt: str, user_prompt: str) -> str:
+    resp = httpx.post(
+        f"{host}/api/chat",
+        json={
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "format": "json",
+            "stream": False,
+        },
+        timeout=180.0,
+    )
+    resp.raise_for_status()
+    return resp.json()["message"]["content"]
+
+
+def _parse_scores(raw_content: str, batch_len: int, fallback_score: int) -> dict[int, dict]:
+    try:
+        parsed = json.loads(raw_content)
+    except json.JSONDecodeError:
+        logger.warning("Triage model returned invalid JSON, falling back to pass-through for this batch")
+        parsed = []
+
+    scores: dict[int, dict] = {}
+    for entry in parsed:
+        try:
+            idx = int(entry["index"])
+            scores[idx] = {"score": int(entry["score"]), "reason": entry.get("reason", "")}
+        except (KeyError, ValueError, TypeError):
+            continue
+
+    for i in range(batch_len):
+        if i not in scores:
+            scores[i] = {"score": fallback_score, "reason": "triage-parse-fallback: model omitted this item"}
+    return scores
+
+
+def triage_items(
+    items: list,
+    entities: list,
+    theses: list,
+    ollama_host: str,
+    model: str,
+    score_threshold: int,
+) -> list:
+    """Score every item 0-10 via the local Ollama model and return only
+    those meeting `score_threshold`, each annotated with its triage score."""
+    if not items:
+        return []
+
+    system_prompt = _load_system_prompt()
+    context_block = _build_context_block(entities, theses)
+
+    surviving = []
+    for batch_start in range(0, len(items), BATCH_SIZE):
+        batch = items[batch_start : batch_start + BATCH_SIZE]
+        user_prompt = f"{context_block}\n## Items to score\n{_build_batch_block(batch)}"
+        try:
+            raw_content = _call_ollama(ollama_host, model, system_prompt, user_prompt)
+        except httpx.HTTPError:
+            logger.exception(
+                "Ollama triage call failed after retries for batch starting at %d; "
+                "is `ollama serve` running with model '%s' pulled?",
+                batch_start,
+                model,
+            )
+            continue
+
+        scores = _parse_scores(raw_content, len(batch), fallback_score=score_threshold)
+        for i, item in enumerate(batch):
+            result = scores[i]
+            if result["score"] >= score_threshold:
+                item.raw_metadata["triage_score"] = result["score"]
+                item.raw_metadata["triage_reason"] = result["reason"]
+                surviving.append(item)
+
+    logger.info(
+        "Triage: %d items scored, %d survived threshold %d", len(items), len(surviving), score_threshold
+    )
+    return surviving

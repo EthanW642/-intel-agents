@@ -1,0 +1,89 @@
+# Middle East agent — Stage 1 (ingest) source configuration.
+#
+# IMPORTANT: this file's URLs could not be verified with a live network call
+# from the environment this project was built in (its network policy blocks
+# arbitrary outbound domains, GDELT/RSS hosts included). Before relying on
+# this in production, confirm every URL below actually resolves from your
+# machine (`curl -I <url>`) and adjust here if any have moved — ingest.py
+# is written to log-and-skip a dead source rather than crash, but a silently
+# dead source still means quietly losing an ingestion channel.
+
+domain: middle_east
+
+gdelt:
+  # Handled via the `gdelt` PyPI package (gdeltPyR), which pulls the GDELT
+  # 2.0 Event Database directly from data.gdeltproject.org — no API key.
+  table: events
+  # How many days back to pull on each run (GDELT 2.0 updates every 15 min;
+  # a 1-day window covers a daily-cadence agent run with margin).
+  lookback_days: 1
+  # Actor1CountryCode / Actor2CountryCode use CAMEO 3-letter country codes,
+  # which for current states match ISO 3166-1 alpha-3. An event is kept if
+  # EITHER actor's country code is in this list.
+  actor_country_codes:
+    - ISR  # Israel
+    - PSE  # Palestine (West Bank / Gaza)
+    - LBN  # Lebanon
+    - SYR  # Syria
+    - IRN  # Iran
+    - IRQ  # Iraq
+    - SAU  # Saudi Arabia
+    - YEM  # Yemen
+    - JOR  # Jordan
+    - EGY  # Egypt
+    - ARE  # United Arab Emirates
+    - QAT  # Qatar
+    - BHR  # Bahrain
+    - KWT  # Kuwait
+    - OMN  # Oman
+    - TUR  # Turkey (regionally entangled: Syria, Kurdish issues)
+    - USA  # catches US CENTCOM / US-actor events involving the region
+  # ActionGeo_CountryCode uses FIPS 10-4 2-letter codes, which diverge from
+  # ISO for several countries in this list (e.g. Iraq is IZ in FIPS, not IQ).
+  # UNVERIFIED against the GDELT codebook from this build environment —
+  # double check before depending on this filter alone.
+  geo_country_codes:
+    - IS  # Israel
+    - WE  # West Bank
+    - GZ  # Gaza Strip
+    - LE  # Lebanon
+    - SY  # Syria
+    - IR  # Iran
+    - IZ  # Iraq (FIPS, not ISO "IQ")
+    - SA  # Saudi Arabia
+    - YM  # Yemen
+    - JO  # Jordan
+    - EG  # Egypt
+    - AE  # United Arab Emirates
+    - QA  # Qatar
+    - BA  # Bahrain
+    - KU  # Kuwait
+    - MU  # Oman
+    - TU  # Turkey
+  # Only keep events whose GoldsteinScale magnitude or NumMentions clears a
+  # floor, to avoid flooding triage with trivial/low-signal wire events.
+  min_num_mentions: 5
+
+liveuamap:
+  # High-recall, lower-reliability rapid-update layer (spec 4.1). Treat
+  # exactly like any other RSS source at triage time — no whitelisting past
+  # triage. Polled more frequently than the narrative RSS layer.
+  feed_url: "https://israelpalestine.liveuamap.com/rss"
+  poll_interval_minutes: 20
+  # UNVERIFIED live from this build environment.
+
+rss_feeds:
+  # Narrative/context layer. Phase 1 uses 3 of the 6 sources listed in the
+  # spec (Times of Israel, Al Jazeera, Reuters ME) — extend this list with
+  # AP Middle East / Iran International / Al-Monitor in a later phase.
+  - name: "Times of Israel"
+    url: "https://www.timesofisrael.com/feed/"
+    poll_interval_minutes: 60
+  - name: "Al Jazeera"
+    url: "https://www.aljazeera.com/xml/rss/all.xml"
+    poll_interval_minutes: 60
+    note: "General AJ feed, not ME-specific — triage filters relevance."
+  - name: "Reuters Middle East"
+    url: "https://www.reutersagency.com/feed/?best-regions=middle-east&post_type=best"
+    poll_interval_minutes: 60
+    note: "Reuters retired most public RSS in ~2020; UNVERIFIED, confirm this still resolves before relying on it."

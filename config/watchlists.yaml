@@ -1,0 +1,78 @@
+# Middle East agent — standing watchlist, thresholds, and analytical frames.
+# Phase 1 scope: this file is the single source of truth for tunable pipeline
+# knobs (spec section 7.4) — nothing here should be hardcoded in pipeline code.
+
+domain: middle_east
+
+pipeline:
+  # Stage 2 — dedup: cosine-similarity ceiling above which two items are
+  # treated as the same underlying story and collapsed to one.
+  dedup_similarity_threshold: 0.88
+  # Stage 2 — triage: 0-10 relevance score cutoff. Items scoring below this
+  # are dropped before Stage 3. Tune based on observed false-negative rate.
+  triage_score_threshold: 6
+  # Stage 3 — memory: how many semantically related past entries to retrieve
+  # from Chroma per run and hand to the analysis stage.
+  memory_retrieval_count: 12
+  # Ollama model used for triage (Stage 2). Must already be pulled locally.
+  triage_model: qwen2.5:14b
+  ollama_host: http://localhost:11434
+  # Sonnet model + thinking budget for Stage 4.
+  analysis_model: claude-sonnet-5
+  analysis_max_tokens: 8000
+  # Daily schedule for the full pipeline run (local time).
+  run_hour: 6
+  run_minute: 0
+
+# Standing entity watchlist (spec section 4, Agent 1). Seeded into the
+# `entities` table on first run if not already present.
+entities:
+  - name: IRGC Leadership
+    type: institution
+    notes: "Islamic Revolutionary Guard Corps command structure, incl. Quds Force."
+  - name: Israeli War Cabinet
+    type: institution
+    notes: "Israeli security cabinet composition and decision-making body."
+  - name: Hezbollah Leadership
+    type: institution
+    notes: "Hezbollah command structure and political leadership."
+  - name: Houthi Command Structure
+    type: institution
+    notes: "Ansar Allah (Houthi) military and political command."
+  - name: Gulf State Foreign Ministries
+    type: institution
+    notes: "Key Gulf Cooperation Council foreign ministries (Saudi, UAE, Qatar, etc.)."
+  - name: US CENTCOM
+    type: institution
+    notes: "US Central Command posture and force deployment in the region."
+  - name: Ali Khamenei
+    type: person
+    notes: "Supreme Leader of Iran; subject of the standing succession/consolidation thesis."
+
+# Standing theses seeded on first run (spec section 3.B, `theses` table).
+# The analysis stage must check every day's items against these before
+# treating anything as a one-off, and update status (active/confirmed/falsified).
+standing_theses:
+  - title: "Khamenei succession and consolidation"
+    statement: >
+      Iran's succession dynamics and IRGC consolidation of power around the
+      Supreme Leader's office are an active, ongoing process, not a one-off
+      event — track candidate positioning, IRGC influence over the Assembly
+      of Experts, and any formal succession-planning signals as they occur.
+    status: active
+  - title: "Escalation/de-escalation signaling vs. stated positions"
+    statement: >
+      Track escalation and de-escalation signaling (troop movements, force
+      posture, direct/indirect messaging) as a separate thread from actors'
+      stated public positions, and flag explicitly whenever stated position
+      and revealed behavior diverge.
+    status: active
+
+# Analytical frame injected into the Sonnet system prompt (see
+# prompts/analysis_system.md) — kept here too so it's visible/tunable
+# alongside the rest of the domain config.
+analytical_frame: >
+  Track escalation/de-escalation signaling separately from stated positions;
+  flag when an actor's stated position and revealed behavior diverge;
+  maintain a running "succession and consolidation" thread for Iran as an
+  active, updating thesis rather than a one-off analysis.
