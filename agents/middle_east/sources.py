@@ -30,6 +30,14 @@ RSS_REQUEST_HEADERS = {
         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept": "application/rss+xml, application/xml, text/xml, */*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    # A plain User-Agent/Accept pair alone wasn't enough for LiveUAMap
+    # (still 403'd) — some bot-walls specifically check for a same-site
+    # Referer to distinguish "loaded from a browser tab" from a bare
+    # script hit. If this still doesn't clear it, the wall is likely doing
+    # something header-based fixes can't solve (a JS/Cloudflare challenge)
+    # — see the LiveUAMap section of config/sources.yaml.
+    "Referer": "https://israelpalestine.liveuamap.com/",
 }
 
 
