@@ -75,6 +75,7 @@ def fetch_gdelt(cfg: dict) -> list[RawItem]:
     actor_codes = set(cfg.get("actor_country_codes", []))
     geo_codes = set(cfg.get("geo_country_codes", []))
     min_mentions = cfg.get("min_num_mentions", 0)
+    min_abs_goldstein = cfg.get("min_abs_goldstein", 0)
 
     end = datetime.now(timezone.utc).date()
     start = end - timedelta(days=lookback_days)
@@ -100,7 +101,14 @@ def fetch_gdelt(cfg: dict) -> list[RawItem]:
     items: list[RawItem] = []
     for _, row in df.iterrows():
         try:
-            if row.get("NumMentions", 0) < min_mentions:
+            # Kept if EITHER threshold clears (spec 4.1) — a low-mention but
+            # high-magnitude event (a breaking strike, before wire pickup
+            # accumulates) shouldn't be dropped just because NumMentions is
+            # still low, and vice versa.
+            mentions = row.get("NumMentions", 0) or 0
+            goldstein = row.get("GoldsteinScale")
+            goldstein_ok = goldstein is not None and abs(goldstein) >= min_abs_goldstein
+            if mentions < min_mentions and not goldstein_ok:
                 continue
             if not row_matches(row):
                 continue

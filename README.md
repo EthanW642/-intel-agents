@@ -192,6 +192,28 @@ trusting daily use:**
    - `sentence-transformers` downloads and runs `all-MiniLM-L6-v2` without
      error (only failed here due to the sandbox's network policy, not a
      code issue, but worth confirming for real).
+   - **In progress as of 2026-07-23**: a first live run surfaced a real bug
+     — `sources.yaml`'s GDELT `actor_country_codes` included `USA`/`TUR`,
+     and the match logic is OR-against-either-actor with no requirement
+     that the *other* actor be Middle East-relevant. Since the US is one
+     of the two actors in a huge share of all daily world diplomatic
+     events, this matched ~27,000 GDELT events for one day (spec targets
+     ~150-300/day total) and drove ~43 sequential local-triage Ollama
+     batches — real thermal-throttling risk on a fanless Air, exactly what
+     the spec's hardware note warns against. Fixed: removed `USA`/`TUR`
+     from `actor_country_codes` (a US-vs-actual-Middle-East-country event
+     still matches via the other actor; Turkey-located events still match
+     via `geo_country_codes`'s `TU`), raised `min_num_mentions` 5→10, and
+     added an actual `min_abs_goldstein` magnitude-floor check (the yaml
+     comment always claimed this existed; it didn't, until now) — an
+     event is kept if *either* threshold clears. Locked in with
+     `tests/test_gdelt_filter.py`. Also added per-batch progress logging
+     to `pipeline/triage.py` and `pipeline/predictions.py`, since the
+     previous log-nothing-until-the-end behavior made a slow-but-working
+     run indistinguishable from a hung one. **Re-run the pipeline after
+     pulling this fix and confirm GDELT's item count lands in a sane
+     range (tens, not tens of thousands) before trusting the daily
+     schedule.**
    - The live Ollama triage call produces well-formed JSON in practice
      (the parser has a fallback path, but you want to see real output).
    - The Sonnet call actually produces the 6-part structure with sensible

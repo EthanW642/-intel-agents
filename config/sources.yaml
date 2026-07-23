@@ -20,6 +20,27 @@ gdelt:
   # Actor1CountryCode / Actor2CountryCode use CAMEO 3-letter country codes,
   # which for current states match ISO 3166-1 alpha-3. An event is kept if
   # EITHER actor's country code is in this list.
+  #
+  # USA and TUR were REMOVED from this list on 2026-07-23 after a live run
+  # produced 27,308 matched GDELT events for a single day (vs. the spec's
+  # ~150-300 raw-items/day target) and drove 43 sequential local-triage
+  # Ollama batches — on a fanless M4 Air that's a real thermal-throttling
+  # risk, exactly what the spec's hardware note warns against. Root cause:
+  # this list is OR-matched against EITHER actor, with no requirement that
+  # the OTHER actor be Middle-East-relevant, so including a global power
+  # like the US matched a huge fraction of all daily world diplomatic
+  # events (US-China, US-Mexico, anything), not just US-Middle East ones.
+  # US/Turkey involvement in an actual Middle East event is still fully
+  # captured two other ways: (a) the OTHER actor in the pair is one of the
+  # actual Middle East countries below, which already satisfies this list's
+  # OR-match without USA/TUR needing to be in it; (b) geo_country_codes
+  # below catches anything that physically happened in the region
+  # (including Turkey's own "TU" geo code) regardless of which actors were
+  # involved. What's lost: a US statement made in Washington *about* the
+  # region with no Middle East country as the other actor (e.g. a CENTMOM
+  # posture announcement with no named counterpart) — an acceptable Phase-1
+  # trade-off per the spec's own "tune based on observed false-negative
+  # rate" instruction; revisit if that gap turns out to matter.
   actor_country_codes:
     - ISR  # Israel
     - PSE  # Palestine (West Bank / Gaza)
@@ -36,8 +57,6 @@ gdelt:
     - BHR  # Bahrain
     - KWT  # Kuwait
     - OMN  # Oman
-    - TUR  # Turkey (regionally entangled: Syria, Kurdish issues)
-    - USA  # catches US CENTCOM / US-actor events involving the region
   # ActionGeo_CountryCode uses FIPS 10-4 2-letter codes, which diverge from
   # ISO for several countries in this list (e.g. Iraq is IZ in FIPS, not IQ).
   # UNVERIFIED against the GDELT codebook from this build environment —
@@ -62,7 +81,14 @@ gdelt:
     - TU  # Turkey
   # Only keep events whose GoldsteinScale magnitude or NumMentions clears a
   # floor, to avoid flooding triage with trivial/low-signal wire events.
-  min_num_mentions: 5
+  # min_num_mentions alone was 5 — far too permissive at this volume (see
+  # the actor_country_codes note above); raised to 10 and paired with an
+  # actual Goldstein-magnitude floor (previously described in this comment
+  # but never implemented) so a low-mention-but-high-impact breaking event
+  # still gets through even before wire pickup accumulates. An event is
+  # kept if EITHER threshold clears.
+  min_num_mentions: 10
+  min_abs_goldstein: 5.0  # GoldsteinScale runs -10..+10; 5 = a clearly significant event, not routine chatter
 
 liveuamap:
   # High-recall, lower-reliability rapid-update layer (spec 4.1). Treat

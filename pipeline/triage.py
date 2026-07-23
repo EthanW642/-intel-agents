@@ -85,9 +85,15 @@ def triage_items(
     system_prompt = _load_system_prompt()
     context_block = _build_context_block(entities, theses)
 
+    total_batches = (len(items) + BATCH_SIZE - 1) // BATCH_SIZE
     surviving = []
-    for batch_start in range(0, len(items), BATCH_SIZE):
+    for batch_num, batch_start in enumerate(range(0, len(items), BATCH_SIZE), start=1):
         batch = items[batch_start : batch_start + BATCH_SIZE]
+        # Per-batch marker so a slow-but-working run is visibly
+        # distinguishable from a hung one on a heavily-loaded local model —
+        # the alternative (nothing until the final summary log) looks
+        # identical to a freeze on a long run.
+        logger.info("Triage batch %d/%d (%d items)...", batch_num, total_batches, len(batch))
         user_prompt = f"{context_block}\n## Items to score\n{_build_batch_block(batch)}"
         try:
             raw_content = call_ollama(ollama_host, model, system_prompt, user_prompt)
@@ -107,6 +113,7 @@ def triage_items(
                 item.raw_metadata["triage_score"] = result["score"]
                 item.raw_metadata["triage_reason"] = result["reason"]
                 surviving.append(item)
+        logger.info("Triage batch %d/%d done — %d survivors so far", batch_num, total_batches, len(surviving))
 
     logger.info(
         "Triage: %d items scored, %d survived threshold %d", len(items), len(surviving), score_threshold

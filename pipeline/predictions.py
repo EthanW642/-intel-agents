@@ -81,9 +81,11 @@ def resolve_predictions(
     system_prompt = _load_system_prompt()
     items_block = _build_items_block(todays_items)
     resolutions: list[dict] = []
+    total_batches = (len(pending_predictions) + BATCH_SIZE - 1) // BATCH_SIZE
 
-    for batch_start in range(0, len(pending_predictions), BATCH_SIZE):
+    for batch_num, batch_start in enumerate(range(0, len(pending_predictions), BATCH_SIZE), start=1):
         batch = pending_predictions[batch_start : batch_start + BATCH_SIZE]
+        logger.info("Prediction resolution batch %d/%d (%d predictions)...", batch_num, total_batches, len(batch))
         predictions_block = _build_predictions_block(batch)
         user_prompt = (
             f"## Pending predictions\n{predictions_block}\n\n## Today's items\n{items_block}\n"
