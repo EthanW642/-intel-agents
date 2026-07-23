@@ -51,9 +51,17 @@ def seed_theses(conn: sqlite3.Connection, domain: str, theses: list[dict]) -> No
 
 
 def get_active_theses(conn: sqlite3.Connection, domain: str) -> list[sqlite3.Row]:
+    # "Active" for the purposes of feeding into analysis = still a live thread,
+    # i.e. not falsified and not dormant (spec 3.B statuses: active/reinforced/
+    # complicated/falsified/dormant).
     return conn.execute(
-        "SELECT * FROM theses WHERE domain = ? AND status = 'active'", (domain,)
+        "SELECT * FROM theses WHERE domain = ? AND status IN ('active', 'reinforced', 'complicated')",
+        (domain,),
     ).fetchall()
+
+
+def get_all_theses(conn: sqlite3.Connection, domain: str) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM theses WHERE domain = ?", (domain,)).fetchall()
 
 
 def get_entities(conn: sqlite3.Connection, domain: str) -> list[sqlite3.Row]:
@@ -148,6 +156,10 @@ def upsert_relationship(
 def update_thesis_status(
     conn: sqlite3.Connection, domain: str, title: str, status: str, evidence_note: str, date: str
 ) -> None:
+    """Update an existing thesis's status with a corroborating-evidence log
+    entry. Use this for reinforced/complicated/falsified transitions driven
+    by today's items — NOT for the dormancy sweep, which has no new
+    evidence by definition (see set_thesis_dormant)."""
     row = conn.execute(
         "SELECT evidence_log FROM theses WHERE domain = ? AND title = ?", (domain, title)
     ).fetchone()
@@ -162,22 +174,97 @@ def update_thesis_status(
     conn.commit()
 
 
+def set_thesis_dormant(conn: sqlite3.Connection, domain: str, title: str) -> None:
+    """Mechanical dormancy transition (spec 3.B) — no evidence-log entry,
+    since dormancy is the absence of new evidence, not a verdict on some."""
+    conn.execute(
+        "UPDATE theses SET status = 'dormant', updated_at = ? WHERE domain = ? AND title = ?",
+        (now_iso(), domain, title),
+    )
+    conn.commit()
+
+
 def insert_or_update_thesis(
-    conn: sqlite3.Connection, domain: str, title: str, statement: str, status: str, date: str
+    conn: sqlite3.Connection,
+    domain: str,
+    title: str,
+    statement: str,
+    status: str,
+    date: str,
+    supporting_event_refs: list | None = None,
 ) -> None:
     ts = now_iso()
     conn.execute(
         """
-        INSERT INTO theses (domain, title, statement, status, evidence_log, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO theses (domain, title, statement, status, evidence_log, supporting_event_refs, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(domain, title) DO UPDATE SET
             statement = excluded.statement,
             status = excluded.status,
             updated_at = excluded.updated_at
         """,
-        (domain, title, statement, status, json.dumps([{"date": date, "note": "created/updated by analysis"}]), ts, ts),
+        (
+            domain,
+            title,
+            statement,
+            status,
+            json.dumps([{"date": date, "note": "created/updated by analysis"}]),
+            json.dumps(supporting_event_refs or []),
+            ts,
+            ts,
+        ),
     )
     conn.commit()
+
+
+def insert_prediction(
+    conn: sqlite3.Connection,
+    domain: str,
+    claim: str,
+    date_made: str,
+    target_date: str | None,
+    source_run_date: str,
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO predictions (domain, claim, date_made, target_date, status, source_run_date, created_at)
+        VALUES (?, ?, ?, ?, 'pending', ?, ?)
+        """,
+        (domain, claim, date_made, target_date, source_run_date, now_iso()),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_pending_predictions(conn: sqlite3.Connection, domain: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM predictions WHERE domain = ? AND status = 'pending' ORDER BY date_made", (domain,)
+    ).fetchall()
+
+
+def resolve_prediction(
+    conn: sqlite3.Connection, prediction_id: int, status: str, resolution_note: str
+) -> None:
+    conn.execute(
+        "UPDATE predictions SET status = ?, resolution_note = ?, resolved_at = ? WHERE id = ?",
+        (status, resolution_note, now_iso(), prediction_id),
+    )
+    conn.commit()
+
+
+def get_recent_resolved_predictions(
+    conn: sqlite3.Connection, domain: str, limit: int = 10
+) -> list[sqlite3.Row]:
+    """Most recently *resolved* (confirmed/contradicted) dated predictions,
+    for the track-record summary fed into Call 2 (spec 3.C)."""
+    return conn.execute(
+        """
+        SELECT * FROM predictions
+        WHERE domain = ? AND status IN ('confirmed', 'contradicted')
+        ORDER BY resolved_at DESC LIMIT ?
+        """,
+        (domain, limit),
+    ).fetchall()
 
 
 def log_api_call(

@@ -1,17 +1,20 @@
 # Intel Agents — Phase 1: Middle East Agent
 
-Local multi-domain intelligence agent system. Phase 1 scope only: the Middle
-East agent, end to end. See the full build spec for later phases.
+Local multi-domain intelligence agent system. Phase 1 scope: the Middle
+East agent, end to end, including its memory system, prediction tracking,
+and email delivery. See the full build spec for later phases.
 
 ## Architecture (this phase)
 
 ```
-Stage 1  INGEST        agents/middle_east/{sources.py,ingest.py}   GDELT + LiveUAMap + RSS
-Stage 2a DEDUP          pipeline/dedup.py                          local embeddings (all-MiniLM-L6-v2)
-Stage 2b TRIAGE         pipeline/triage.py                         local Ollama (qwen2.5:14b) — no API call
-Stage 3  MEMORY QUERY   pipeline/memory.py                         Chroma + SQLite
-Stage 4  DEEP ANALYSIS  pipeline/analyze.py                        Claude Sonnet 5, adaptive thinking — the ONLY API call
-Stage 5  WRITE-BACK     pipeline/memory.py, pipeline/render.py     SQLite/Chroma write-back + Markdown briefing
+Stage 1  INGEST         agents/middle_east/{sources.py,ingest.py}   GDELT + LiveUAMap + RSS
+Stage 2a DEDUP           pipeline/dedup.py                          local embeddings (all-MiniLM-L6-v2)
+Stage 2b TRIAGE          pipeline/triage.py                         local Ollama (qwen2.5:14b) — no API call
+Stage 2c PREDICTION RES. pipeline/predictions.py                    local Ollama — checks pending predictions, no API call
+Stage 3  MEMORY QUERY    pipeline/memory.py                         Chroma + SQLite; dormancy sweep, track record
+Stage 4  DEEP ANALYSIS   pipeline/analyze.py                        Claude Sonnet 5, adaptive thinking — the ONLY API call
+Stage 5  WRITE-BACK      pipeline/memory.py, pipeline/render.py,    SQLite/Chroma write-back, Markdown briefing,
+         + DELIVERY      pipeline/deliver.py                        Gmail SMTP delivery
 ```
 
 ## Setup
@@ -23,14 +26,27 @@ Requires Python 3.11+ and [Ollama](https://ollama.com) installed locally with
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in ANTHROPIC_API_KEY
+cp .env.example .env   # fill in ANTHROPIC_API_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD
 ```
 
 Make sure Ollama is running (`ollama serve`, or the background service) before
-a run — triage will log a warning and skip scoring (failing safe, not open)
-if it can't reach `http://localhost:11434`.
+a run — triage and the prediction resolution check will log a warning and
+skip (failing safe, not open) if they can't reach `http://localhost:11434`.
+
+For Gmail delivery: Google Account → Security → 2-Step Verification (must be
+enabled) → App Passwords → generate a 16-character password for
+`GMAIL_APP_PASSWORD`. This is not your regular Google password. If the Gmail
+env vars are unset, the pipeline still runs and writes the local `.md`
+briefing — it just skips the email step and logs why.
 
 ## Running
+
+**Before your first real run**, verify the RSS/GDELT sources actually
+resolve from your machine (spec-mandated pre-flight check):
+
+```bash
+python scripts/verify_sources.py
+```
 
 One-off run of the full pipeline:
 
@@ -39,11 +55,11 @@ python -m agents.middle_east.run
 ```
 
 Output lands in `briefings/middle_east_<date>.md`. Structured state lives in
-`data/middle_east.sqlite3` (entities/events/relationships/theses) and
-`data/chroma/` (vector store) — both are created and seeded from
+`data/middle_east.sqlite3` (entities/events/relationships/theses/predictions)
+and `data/chroma/` (vector store) — both are created and seeded from
 `config/watchlists.yaml` on first run.
 
-To run on the daily schedule instead of once:
+To run on the daily schedule instead of once (default 5:30am local, per spec):
 
 ```bash
 python scheduler.py
@@ -51,41 +67,128 @@ python scheduler.py
 
 ## Configuration
 
-- `config/watchlists.yaml` — triage threshold, memory retrieval count, Ollama
-  model/host, Sonnet model/token budget, seeded entity watchlist, seeded
-  standing theses, daily run time. Nothing here is hardcoded in pipeline code
-  — tune it here.
+- `config/watchlists.yaml` — triage threshold, memory retrieval count,
+  Ollama model/host, Sonnet model, effort-tier thresholds, dormancy window,
+  prediction track-record threshold, seeded entity watchlist, seeded
+  standing theses, daily run time. Nothing here is hardcoded in pipeline
+  code — tune it here.
 - `config/sources.yaml` — GDELT country-code filters, LiveUAMap feed, RSS
-  feed list. **Verify these URLs resolve from your machine before relying on
-  them** — see the warning comment at the top of that file; they were not
-  verified live from the environment this project was built in (network
-  policy blocked GDELT/RSS/HuggingFace domains there).
+  feed list, each source's reliability tier (spec section 5's Tier 1-4).
+  **Verify these URLs resolve from your machine** with
+  `scripts/verify_sources.py` before relying on them.
+
+Reuters is deliberately excluded from `sources.yaml` — the spec explicitly
+prohibits it (Reuters retired public RSS in 2020; wire content still
+reaches the pipeline indirectly via GDELT's GKG layer). Tehran Times is
+included specifically because the spec calls it out as the source that
+makes the stated-vs-revealed-behavior divergence check actually checkable.
+
+## The effort-tier substitution (read this if the numbers look off)
+
+The build spec's Section 5 describes a scaled *token budget* for extended
+thinking: base ~2,000 tokens + ~300/surviving item, capped at ~10,000, via
+`thinking.budget_tokens`. That parameter is **rejected outright (HTTP 400)
+on Sonnet 5** — it was removed from the current API. The equivalent lever
+today is `output_config.effort` (`low`/`medium`/`high`/`xhigh`/`max`), so
+`pipeline/analyze.py::compute_effort` translates the same *intent* — quiet
+days run light, heavy days with active thesis evaluation run deep — onto
+effort tiers instead of a token count.
+
+This is deliberately conservative: `effort` is capped at `"high"` for
+ordinary days purely by item/thesis-count load. Escalating past `"high"` to
+`"xhigh"` or `"max"` additionally requires a real item-volume signal *and*
+at least one currently-active thesis in play this run (thresholds in
+`watchlists.yaml`: `xhigh_min_triaged_items`/`xhigh_min_active_theses`,
+`max_min_triaged_items`/`max_min_active_theses`) — so a day with a lot of
+low-signal volume but no theses in play doesn't silently burn `xhigh`
+tokens, and `"high"` doesn't become the silent default the way a single
+large token cap effectively would.
 
 ## Cost tracking
 
-Every Sonnet call is logged to `data/api_cost_log.csv` (timestamp, model,
-input/output tokens, estimated cost) using Sonnet 5's introductory pricing
-($2/$10 per MTok through 2026-08-31, then $3/$15). Target budget per spec is
-~$10-15/month for this one agent running daily.
+Two logs, both under `data/` (gitignored):
+
+- `data/api_cost_log.csv` — every Sonnet call: timestamp, model, **effort
+  tier chosen**, input/output tokens, estimated cost, using Sonnet 5's
+  introductory pricing ($2/$10 per MTok through 2026-08-31, then $3/$15).
+- `data/run_log.csv` — one row per pipeline run: ingestion/dedup/triage
+  counts, predictions resolved this run, the effort tier and actual
+  token/cost outcome, write-back counts (including theses rejected for the
+  2-event bar), and email delivery outcome (sent/retried/error). This is
+  what actually tracks real cost against the spec's ~$10-15/month
+  projection — effort tiers are less predictable up front than a fixed
+  token budget was, so watch this file for the first couple of weeks.
 
 ## What's tested vs. what isn't
 
-This was built in a sandboxed environment whose network policy blocks
-GDELT, LiveUAMap/RSS hosts, Hugging Face (embedding model download), and
-Ollama's default port. As a result:
+This was built and tested from a sandboxed environment whose network policy
+blocks GDELT, RSS hosts, Ollama's default port, and Gmail SMTP — so nothing
+requiring live network access to those specific services could be run here.
+Hugging Face (for the dedup/Chroma embedding model) and PyPI *were*
+reachable, which is documented per-item below rather than assumed.
 
-- **Verified**: SQLite schema and CRUD, Chroma write/query logic (against a
-  fake in-memory collection), dedup clustering math (against a fake
-  embedder), triage batching/parsing/threshold logic and its failure paths
-  (against a mocked Ollama response and a real connection-refused error),
-  the Sonnet prompt-building and JSON-write-back-extraction logic, cost
-  estimation math, the Markdown renderer, and a full mocked end-to-end run
-  of all 5 stages wired together.
-- **Not verified from this environment** (needs a real run on a machine with
-  network access to GDELT/RSS/HuggingFace/Ollama, and a real Anthropic API
-  key): that the GDELT/LiveUAMap/RSS URLs in `config/sources.yaml` actually
-  resolve and parse as expected; that `sentence-transformers` downloads and
-  runs `all-MiniLM-L6-v2` correctly; that a live Ollama server running
-  `qwen2.5:14b` produces well-formed triage JSON in practice; and that a real
-  Sonnet 5 call produces the intended 6-part analysis. Do a real run and
-  spot-check the output before trusting it for daily use.
+**Verified in this environment** (`python -m pytest tests/` — 50 tests,
+all passing; also `python -m py_compile` on every file and a plain import
+of every module):
+- Dedup clustering math (against a fake embedder — the real
+  `sentence-transformers` model itself was not exercised, see below).
+- Triage batching/parsing/threshold logic and its fallback paths, against
+  a mocked Ollama response.
+- The prediction resolution parser and the resolve/skip logic, against a
+  mocked Ollama response.
+- Effort-tier computation across the low/medium/high/xhigh/max boundaries,
+  including the "high is a cap, escalation needs both gates" behavior.
+- Cost estimation math (intro vs. standard pricing).
+- The Sonnet prompt-building logic, including the cold-start flag and
+  track-record inclusion/omission.
+- The JSON write-back extraction, including the 2-independent-event bar
+  enforcement for new theses (rejects a thesis backed by <2 distinct
+  events, including a duplicate-citation attempt) and the thesis dormancy
+  sweep, all against a real (in-memory) SQLite connection.
+- Prediction track-record summary generation (present/omitted based on
+  the configured minimum resolved count).
+- The Markdown → HTML conversion used in the email body.
+- Email message construction (plaintext + HTML + attachment, static
+  subject format) and the retry-once-then-give-up behavior, with SMTP
+  itself mocked out — no real email was sent from this environment.
+- The run-log CSV writer.
+- Confirmed live from this environment: `pip install -r requirements.txt`
+  succeeds cleanly (PyPI was reachable); every module in the repo imports
+  without error; ingestion's log-and-skip failure handling was exercised
+  for real against the actual network block (GDELT/RSS calls genuinely
+  failed with a proxy error and `run_ingest()` still returned cleanly
+  rather than raising); the same proxy block was hit when
+  `store/chroma_client.py` tried to download the `all-MiniLM-L6-v2`
+  embedding model from Hugging Face, confirming *why* the dedup test above
+  has to use a fake embedder here.
+
+**Not verified from this environment — do this on your Mac before
+trusting daily use:**
+
+1. `python scripts/verify_sources.py` — confirm GDELT and all three RSS
+   feeds actually resolve and return current items from your network.
+2. A real end-to-end run: `ollama serve` (with `qwen2.5:14b` pulled) running
+   in the background, then `python -m agents.middle_east.run` with a real
+   `ANTHROPIC_API_KEY` in `.env`. Check that:
+   - `sentence-transformers` downloads and runs `all-MiniLM-L6-v2` without
+     error (only failed here due to the sandbox's network policy, not a
+     code issue, but worth confirming for real).
+   - The live Ollama triage call produces well-formed JSON in practice
+     (the parser has a fallback path, but you want to see real output).
+   - The Sonnet call actually produces the 6-part structure with sensible
+     source-tier handling, cold-start language (expected on your very
+     first run — the store starts empty), and confidence tagging — spot
+     check it, don't just trust that it parsed.
+   - `data/run_log.csv` and `data/api_cost_log.csv` get real rows with a
+     plausible effort tier and cost.
+3. A real test email: with `GMAIL_ADDRESS`/`GMAIL_APP_PASSWORD` set, confirm
+   the email actually lands (check spam too), the subject line matches the
+   static `[Middle East Intel] <Month Day, Year>` format, the HTML body
+   renders reasonably in your mail client, and the `.md` file is attached.
+4. After ~1-2 weeks of daily runs: check that "why it matters given prior
+   context" is actually citing real past events by date, not hallucinating
+   continuity — this is the single failure mode the spec calls out as most
+   important to guard against.
+5. After several weeks (once enough predictions have resolved): check that
+   the track-record summary appears in the prompt and that new predictions'
+   confidence language visibly responds to it, not just note it.

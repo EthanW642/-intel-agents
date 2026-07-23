@@ -103,7 +103,9 @@ def fetch_gdelt(cfg: dict) -> list[RawItem]:
                     url=url,
                     published=published,
                     text=desc,
-                    raw_metadata={"event_code": event_code, "goldstein": row.get("GoldsteinScale")},
+                    # Tier 1 (structured/primary) per spec 5.1 — GDELT is the
+                    # structured event-occurrence source.
+                    raw_metadata={"event_code": event_code, "goldstein": row.get("GoldsteinScale"), "tier": 1},
                 )
             )
         except Exception:
@@ -112,9 +114,11 @@ def fetch_gdelt(cfg: dict) -> list[RawItem]:
     return items
 
 
-def fetch_rss(name: str, url: str, timeout: float = 15.0) -> list[RawItem]:
+def fetch_rss(name: str, url: str, tier: int | None = None, timeout: float = 15.0) -> list[RawItem]:
     """Fetch and parse a single RSS feed. Logs and returns [] on failure so
-    one dead feed doesn't take down the whole ingestion run."""
+    one dead feed doesn't take down the whole ingestion run. `tier` (spec
+    5.1's source reliability tiering) is carried through in raw_metadata so
+    the analysis prompt can apply the tiering rule."""
     try:
         resp = httpx.get(url, timeout=timeout, follow_redirects=True)
         resp.raise_for_status()
@@ -138,17 +142,18 @@ def fetch_rss(name: str, url: str, timeout: float = 15.0) -> list[RawItem]:
                 url=link,
                 published=published,
                 text=_truncate_words(f"{title}. {summary}"),
+                raw_metadata={"tier": tier} if tier is not None else {},
             )
         )
     return items
 
 
 def fetch_liveuamap(cfg: dict) -> list[RawItem]:
-    return fetch_rss("LiveUAMap Israel-Palestine", cfg["feed_url"])
+    return fetch_rss("LiveUAMap Israel-Palestine", cfg["feed_url"], tier=cfg.get("tier", 4))
 
 
 def fetch_all_rss(cfg: dict) -> list[RawItem]:
     items: list[RawItem] = []
     for feed in cfg.get("rss_feeds", []):
-        items.extend(fetch_rss(feed["name"], feed["url"]))
+        items.extend(fetch_rss(feed["name"], feed["url"], tier=feed.get("tier")))
     return items

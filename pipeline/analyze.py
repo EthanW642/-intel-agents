@@ -1,7 +1,7 @@
-"""Stage 4 — deep analysis via Claude Sonnet 5 with extended (adaptive)
-thinking (spec section 5, Call 2). This is the ONLY stage in the whole
-pipeline that calls the Anthropic API; triage (Stage 2) stays local via
-Ollama.
+"""Stage 4 — deep analysis via Claude Sonnet 5 with adaptive thinking (spec
+section 5, Call 2). This is the ONLY stage in the whole pipeline that calls
+the Anthropic API; triage and prediction resolution (Stage 2) stay local
+via Ollama.
 """
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import csv
 import json
 import logging
 import re
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import anthropic
@@ -19,8 +20,7 @@ ANALYSIS_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "analysis_syst
 COST_LOG_PATH = Path(__file__).parent.parent / "data" / "api_cost_log.csv"
 
 # Sonnet 5 pricing per spec section 2: introductory $2/$10 per MTok through
-# 2026-08-31, reverting to standard $3/$15 after. Update INTRO_PRICING_CUTOFF
-# has already passed handling below.
+# 2026-08-31, reverting to standard $3/$15 after.
 PRICING = {
     "intro": {"input": 2.00, "output": 10.00, "cutoff": "2026-08-31"},
     "standard": {"input": 3.00, "output": 15.00},
@@ -28,8 +28,6 @@ PRICING = {
 
 
 def _current_rates() -> dict:
-    from datetime import date
-
     cutoff = date.fromisoformat(PRICING["intro"]["cutoff"])
     if date.today() <= cutoff:
         return PRICING["intro"]
@@ -45,32 +43,81 @@ def _load_system_prompt() -> str:
     return ANALYSIS_PROMPT_PATH.read_text()
 
 
+def compute_effort(triaged_item_count: int, active_theses_count: int, pipeline_cfg: dict) -> str:
+    """Translate spec 5's "scaled thinking budget, not flat" onto
+    `output_config.effort` (see config/watchlists.yaml for why — Sonnet 5
+    rejects `thinking.budget_tokens` outright).
+
+    Deliberately conservative: "high" is a CAP reached by item/thesis load
+    alone; escalating past it to "xhigh"/"max" additionally requires a real
+    item-volume signal AND at least one currently-active thesis in play,
+    so "high" doesn't become the silent default on an ordinary day.
+    """
+    if (
+        triaged_item_count >= pipeline_cfg["max_min_triaged_items"]
+        and active_theses_count >= pipeline_cfg["max_min_active_theses"]
+    ):
+        return "max"
+    if (
+        triaged_item_count >= pipeline_cfg["xhigh_min_triaged_items"]
+        and active_theses_count >= pipeline_cfg["xhigh_min_active_theses"]
+    ):
+        return "xhigh"
+
+    load = triaged_item_count + 2 * active_theses_count
+    if load <= pipeline_cfg["effort_low_max_load"]:
+        return "low"
+    if load <= pipeline_cfg["effort_medium_max_load"]:
+        return "medium"
+    return "high"
+
+
 def _build_user_prompt(triaged_items: list, memory_context: dict) -> str:
     items_block = "\n".join(
-        f"- [{item.source}, {item.published}] {item.title}\n"
+        f"- [{item.source} (Tier {item.raw_metadata.get('tier', '?')}), {item.published}] {item.title}\n"
         f"  excerpt: {item.text[:500]}\n"
         f"  triage: score={item.raw_metadata.get('triage_score')} reason={item.raw_metadata.get('triage_reason')}"
         for item in triaged_items
-    )
+    ) or "(none survived triage today)"
 
+    active_theses = memory_context["active_theses"]
     theses_block = "\n".join(
-        f"- [{t['status']}] {t['title']}: {t['statement']}" for t in memory_context["active_theses"]
+        f"- [{t['status']}] {t['title']}: {t['statement']}" for t in active_theses
     ) or "(none yet)"
 
     entities_block = "\n".join(
         f"- {e['name']} ({e['type']}): {e.get('notes', '')}" for e in memory_context["entity_graph"]
     ) or "(none yet)"
 
+    related_events = memory_context["related_past_events"]
     related_block = "\n".join(
         f"- {r['summary']} (date={r['metadata'].get('date')}, distance={r['distance']:.3f})"
-        for r in memory_context["related_past_events"]
+        for r in related_events
     ) or "(no related past events retrieved)"
 
+    # Explicit runtime cold-start signal alongside the system prompt's
+    # instruction — spec 5 calls this the primary failure mode to guard
+    # against, so don't rely on the model inferring sparseness from an
+    # empty-looking section alone.
+    memory_status = (
+        f"MEMORY STATUS: {len(active_theses)} active thesis(es), "
+        f"{len(related_events)} related past event(s) retrieved."
+    )
+    if not active_theses and not related_events:
+        memory_status += " This looks like a cold start — say so plainly in section 2, do not manufacture continuity."
+
+    track_record = memory_context.get("track_record_summary")
+    track_record_block = (
+        f"## Prediction track record\n{track_record}\n\n" if track_record else ""
+    )
+
     return (
+        f"{memory_status}\n\n"
         f"## Today's surviving items ({len(triaged_items)})\n{items_block}\n\n"
         f"## Active standing theses\n{theses_block}\n\n"
         f"## Tracked entity graph\n{entities_block}\n\n"
-        f"## Retrieved related past events\n{related_block}\n"
+        f"## Retrieved related past events\n{related_block}\n\n"
+        f"{track_record_block}"
     )
 
 
@@ -78,21 +125,29 @@ def _extract_json_block(text: str) -> dict:
     match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
     if not match:
         logger.warning("No JSON write-back block found in analysis output")
-        return {"new_entities": [], "new_relationships": [], "new_events": [], "thesis_updates": []}
-    return json.loads(match.group(1))
+        return {
+            "new_entities": [],
+            "new_relationships": [],
+            "new_events": [],
+            "thesis_updates": [],
+            "new_predictions": [],
+        }
+    parsed = json.loads(match.group(1))
+    parsed.setdefault("new_predictions", [])
+    return parsed
 
 
-def _log_cost_csv(domain: str, model: str, input_tokens: int, output_tokens: int, cost: float) -> None:
-    from datetime import datetime, timezone
-
+def _log_cost_csv(domain: str, model: str, effort: str, input_tokens: int, output_tokens: int, cost: float) -> None:
     COST_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     is_new = not COST_LOG_PATH.exists()
     with open(COST_LOG_PATH, "a", newline="") as f:
         writer = csv.writer(f)
         if is_new:
-            writer.writerow(["timestamp", "domain", "model", "input_tokens", "output_tokens", "estimated_cost_usd"])
+            writer.writerow(
+                ["timestamp", "domain", "model", "effort", "input_tokens", "output_tokens", "estimated_cost_usd"]
+            )
         writer.writerow(
-            [datetime.now(timezone.utc).isoformat(), domain, model, input_tokens, output_tokens, f"{cost:.6f}"]
+            [datetime.now(timezone.utc).isoformat(), domain, model, effort, input_tokens, output_tokens, f"{cost:.6f}"]
         )
 
 
@@ -102,12 +157,15 @@ def run_analysis(
     domain: str,
     model: str,
     max_tokens: int,
+    pipeline_cfg: dict,
     api_key: str | None = None,
 ) -> dict:
-    """Single Sonnet call with adaptive extended thinking. Returns
+    """Single Sonnet call with adaptive thinking, scaled effort. Returns
     {"markdown": full response text, "write_back": parsed JSON block,
-    "usage": {...}, "cost_usd": float}."""
+    "usage": {...}, "cost_usd": float, "effort": str}."""
     client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
+
+    effort = compute_effort(len(triaged_items), len(memory_context["active_theses"]), pipeline_cfg)
 
     system_prompt = _load_system_prompt()
     user_prompt = _build_user_prompt(triaged_items, memory_context)
@@ -116,6 +174,7 @@ def run_analysis(
         model=model,
         max_tokens=max_tokens,
         thinking={"type": "adaptive", "display": "summarized"},
+        output_config={"effort": effort},
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}],
     ) as stream:
@@ -127,11 +186,12 @@ def run_analysis(
     input_tokens = response.usage.input_tokens
     output_tokens = response.usage.output_tokens
     cost = _estimate_cost(input_tokens, output_tokens)
-    _log_cost_csv(domain, model, input_tokens, output_tokens, cost)
+    _log_cost_csv(domain, model, effort, input_tokens, output_tokens, cost)
 
     logger.info(
-        "Analysis call: model=%s input_tokens=%d output_tokens=%d cost=$%.4f",
+        "Analysis call: model=%s effort=%s input_tokens=%d output_tokens=%d cost=$%.4f",
         model,
+        effort,
         input_tokens,
         output_tokens,
         cost,
@@ -142,4 +202,5 @@ def run_analysis(
         "write_back": write_back,
         "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
         "cost_usd": cost,
+        "effort": effort,
     }

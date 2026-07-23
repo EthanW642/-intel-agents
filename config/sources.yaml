@@ -70,20 +70,30 @@ liveuamap:
   # triage. Polled more frequently than the narrative RSS layer.
   feed_url: "https://israelpalestine.liveuamap.com/rss"
   poll_interval_minutes: 20
+  tier: 4  # rapid/uncorroborated — needs Tier 1/2 corroboration (spec 5.1)
   # UNVERIFIED live from this build environment.
 
 rss_feeds:
-  # Narrative/context layer. Phase 1 uses 3 of the 6 sources listed in the
-  # spec (Times of Israel, Al Jazeera, Reuters ME) — extend this list with
-  # AP Middle East / Iran International / Al-Monitor in a later phase.
+  # Narrative/context layer. Phase 1 uses 3 of the spec's 6 named sources.
+  # Reuters is deliberately excluded — the spec explicitly prohibits it
+  # ("Reuters discontinued public RSS feeds in 2020 — do not use a Reuters
+  # RSS source"; wire content is still captured indirectly via GDELT's GKG
+  # layer). Tehran Times is included specifically per spec 4.1: it's the
+  # source that makes the stated-vs-revealed-behavior divergence check
+  # (spec 5, reasoning step 3) actually checkable rather than one-sided.
+  # Extend with AP Middle East / Middle East Eye / Axios Middle East in a
+  # later phase per spec section 4.
   - name: "Times of Israel"
     url: "https://www.timesofisrael.com/feed/"
     poll_interval_minutes: 60
+    tier: 3  # aligned/interpretive — reliable on facts, framing attributed to source
   - name: "Al Jazeera"
     url: "https://www.aljazeera.com/xml/rss/all.xml"
     poll_interval_minutes: 60
+    tier: 2  # wire/agency — treated as reliable factual reporting
     note: "General AJ feed, not ME-specific — triage filters relevance."
-  - name: "Reuters Middle East"
-    url: "https://www.reutersagency.com/feed/?best-regions=middle-east&post_type=best"
+  - name: "Tehran Times"
+    url: "https://www.tehrantimes.com/rss"
     poll_interval_minutes: 60
-    note: "Reuters retired most public RSS in ~2020; UNVERIFIED, confirm this still resolves before relying on it."
+    tier: 3  # aligned/interpretive — explicitly establishment-aligned, not neutral (spec 4.1)
+    note: "Domestic Iranian English-language daily — captures Iran's own stated/official framing directly, not filtered through Western/Israeli coverage of it."

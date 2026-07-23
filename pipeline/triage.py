@@ -12,7 +12,8 @@ import logging
 from pathlib import Path
 
 import httpx
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+
+from pipeline.ollama_client import call_ollama
 
 logger = logging.getLogger(__name__)
 
@@ -45,30 +46,6 @@ def _build_batch_block(items: list) -> str:
             f"excerpt: {item.text[:600]}\n"
         )
     return "\n".join(lines)
-
-
-@retry(
-    retry=retry_if_exception_type(httpx.HTTPError),
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
-    reraise=True,
-)
-def _call_ollama(host: str, model: str, system_prompt: str, user_prompt: str) -> str:
-    resp = httpx.post(
-        f"{host}/api/chat",
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "format": "json",
-            "stream": False,
-        },
-        timeout=180.0,
-    )
-    resp.raise_for_status()
-    return resp.json()["message"]["content"]
 
 
 def _parse_scores(raw_content: str, batch_len: int, fallback_score: int) -> dict[int, dict]:
@@ -113,7 +90,7 @@ def triage_items(
         batch = items[batch_start : batch_start + BATCH_SIZE]
         user_prompt = f"{context_block}\n## Items to score\n{_build_batch_block(batch)}"
         try:
-            raw_content = _call_ollama(ollama_host, model, system_prompt, user_prompt)
+            raw_content = call_ollama(ollama_host, model, system_prompt, user_prompt)
         except httpx.HTTPError:
             logger.exception(
                 "Ollama triage call failed after retries for batch starting at %d; "
