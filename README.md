@@ -210,26 +210,60 @@ trusting daily use:**
         5→10, added a real `min_abs_goldstein` magnitude floor (the yaml
         comment always claimed one existed; it didn't). Locked in with
         `tests/test_gdelt_filter.py`.
-     2. **GDELT date rejected as "in the future."** First diagnosed (wrongly)
-        as a UTC-vs-local timezone bug and "fixed" by switching to local
-        time — that didn't work, because the real cause is that the test
-        machine's system clock reads 2026 while GDELT is a live
-        real-world service whose actual data doesn't extend that far yet.
-        No local date computation, in any timezone, can be correct against
-        a clock that's ahead of reality. Properly fixed: `fetch_gdelt` now
-        asks GDELT's own `lastupdate.txt` feed what its most recent
-        available date actually is and uses that, falling back to the
-        local date only if that live check itself fails.
+     2. **GDELT date rejected as "in the future."** Took three attempts to
+        actually fix, each one narrowing the diagnosis:
+        - Attempt 1 (wrong): assumed UTC-vs-local was the whole story and
+          switched the date computation from `datetime.now(timezone.utc)`
+          to plain `datetime.now()`. Didn't fix it.
+        - Attempt 2 (partially right, overcorrected): assumed gdeltPyR's
+          real-world data simply didn't extend to this session's date yet,
+          and had `fetch_gdelt` ask GDELT's own `lastupdate.txt` feed for
+          its actual latest date instead of trusting any local clock. This
+          fixed the *fetch*, but the underlying "local clock is untrustworthy"
+          framing was wrong — there's no evidence the system clock is
+          anything but the genuine current date.
+        - Root cause (confirmed against a real `curl` of `lastupdate.txt`):
+          GDELT's file timestamps are UTC (e.g. `20260725020000` = 2am UTC
+          July 25), but gdeltPyR's *own* date validation compares the
+          requested date against **local naive** `datetime.now()`. On a
+          machine west of UTC in the evening, UTC has already rolled into
+          the next calendar day while local hasn't — so GDELT's own
+          correct, live UTC date can itself look "in the future" to
+          gdeltPyR's local-time check. Fix: `fetch_gdelt` now clamps to
+          `min(GDELT's live date, local today)`, satisfying both reference
+          frames at once. Locked in with a regression test in
+          `tests/test_gdelt_filter.py` using a fixed local time one day
+          behind a fixed GDELT UTC date.
      3. **Sonnet call truncated at max effort, wrote back nothing.** A real
         `effort=max` call on 68 items hit the old `analysis_max_tokens:
         16000` cap during thinking, never reached the closing JSON
         write-back block, and the $0.20 call persisted zero entities/
         events/theses/predictions. Fixed: raised `analysis_max_tokens` to
         64000, matching the documented minimum for xhigh/max effort.
-     4. Added per-batch progress logging to `pipeline/triage.py` and
+     4. **The 2 permanent seed theses were tripping xhigh/max effort every
+        day.** The Khamenei-succession and escalation/de-escalation theses
+        never expire, so `active_theses >= N` was satisfied unconditionally
+        for any `N <= 2`, making `max` effort the routine outcome (and, on
+        the run that surfaced bug 3, a wasted $0.20) rather than reserved
+        for genuinely heavy days. Fixed: raised `xhigh_min_active_theses`/
+        `max_min_active_theses` to 3/4 — verified live that a run with just
+        the 2 seed theses now correctly caps at `high` regardless of item
+        count, at roughly $0.17 instead of $0.20+, and that a subsequent
+        real run wrote back real content (10 entities, 5 relationships, 11
+        events, 3 thesis updates including one new thesis that correctly
+        cleared the 2-event bar with 4 distinct supporting events, 2
+        predictions) instead of zero.
+     5. Added per-batch progress logging to `pipeline/triage.py` and
         `pipeline/predictions.py` — the previous log-nothing-until-the-end
         behavior made a slow-but-working run indistinguishable from a
         hung one, which is part of why (1) took a while to even notice.
+
+     **First full clean run confirmed (2026-07-24):** cold-start handling
+     ("no established pattern yet," not fabricated continuity), source
+     tiering, evidence-gated thesis evaluation, the 2-hop inference cap
+     with explicit hop labeling, the 2-independent-event bar for new
+     theses, real memory write-back, and email delivery are all validated
+     against live output, not just unit tests.
 
      **Re-run the pipeline after pulling these fixes** and confirm: GDELT's
      item count lands in a sane range (tens, not tens of thousands or
