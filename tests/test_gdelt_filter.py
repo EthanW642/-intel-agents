@@ -1,5 +1,5 @@
 import sys
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -128,6 +128,31 @@ def test_gdelt_latest_available_date_falls_back_to_none_on_unexpected_body():
     with patch("httpx.get", return_value=fake_response):
         result = _gdelt_latest_available_date()
     assert result is None
+
+
+def test_fetch_gdelt_clamps_to_local_today_when_gdelt_date_is_ahead():
+    # Regression for the real bug: GDELT's file timestamps are UTC and can
+    # be a calendar day ahead of local evening time (e.g. 2am UTC July 25
+    # while it's still July 24 evening Pacific) -- gdeltPyR's own date
+    # validation compares against LOCAL naive time, so passing GDELT's raw
+    # UTC-ahead date straight through gets rejected as "in the future."
+    fake_gd_instance = MagicMock()
+    fake_gd_instance.Search.return_value = pd.DataFrame([])
+    fake_gdelt_module = MagicMock()
+    fake_gdelt_module.gdelt.return_value = fake_gd_instance
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 7, 24, 19, 0, 0)  # local evening, one day behind GDELT's UTC date
+
+    with patch.dict(sys.modules, {"gdelt": fake_gdelt_module}), patch(
+        "agents.middle_east.sources._gdelt_latest_available_date", return_value=date(2026, 7, 25)
+    ), patch("agents.middle_east.sources.datetime", FixedDatetime):
+        fetch_gdelt(CFG)
+
+    called_date_range = fake_gd_instance.Search.call_args[0][0]
+    assert called_date_range == ["2026 07 23", "2026 07 24"]  # clamped to local today, not GDELT's 07 25
 
 
 def test_fetch_gdelt_skips_cleanly_when_date_unknown():

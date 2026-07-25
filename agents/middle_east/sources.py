@@ -67,21 +67,14 @@ GDELT_LASTUPDATE_URL = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
 
 
 def _gdelt_latest_available_date(timeout: float = 15.0) -> date | None:
-    """Ask GDELT's own live feed what its most recent available date
-    actually is, rather than trusting the local system clock at all.
-
-    Confirmed necessary 2026-07-24: switching the local date computation
-    from UTC to local time (an earlier, wrong diagnosis) did NOT fix
-    gdeltPyR's "One of your dates is greater than the current date" error,
-    because the real cause isn't a timezone mismatch — it's that this
-    machine's system clock reads dates GDELT's real service (running in
-    true wall-clock time) doesn't have data for yet. No local date
-    computation, in any timezone, can be correct here; the only reliable
-    source of "what's the latest real GDELT date" is GDELT itself. Returns
-    None if this live check fails for any reason (network, unexpected
-    response shape) — the caller treats None as "skip GDELT this run"
-    rather than falling back to the local clock, since that fallback is
-    exactly what's known to be broken in this environment.
+    """Ask GDELT's own live feed what its most recent available date is,
+    rather than assuming "today" locally. GDELT's own file timestamps are
+    UTC — see fetch_gdelt's local_today clamp for why that alone isn't
+    enough and this still needs reconciling against the local clock too.
+    Returns None if the live check fails for any reason (network,
+    unexpected response shape); the caller treats that as "skip GDELT this
+    run" rather than guessing, since a wrong guess here reliably
+    reproduces gdeltPyR's "date is in the future" rejection.
     """
     try:
         resp = httpx.get(GDELT_LASTUPDATE_URL, timeout=timeout)
@@ -122,13 +115,26 @@ def fetch_gdelt(cfg: dict) -> list[RawItem]:
 
     end = _gdelt_latest_available_date()
     if end is None:
-        # Do not fall back to the local clock here — that fallback is
-        # exactly what's broken in this environment (system clock reads
-        # 2026; GDELT's real data doesn't extend that far), so attempting
-        # the Search() call with it would just reproduce the same
-        # ValueError every run. A clean skip beats a guaranteed crash.
         logger.warning("Skipping GDELT this run — could not determine a valid query date")
         return []
+
+    # Confirmed live 2026-07-24/25: GDELT's own file timestamps are UTC
+    # (e.g. 20260725020000 = 2am UTC July 25), but gdeltPyR's own date
+    # validation compares the requested date against LOCAL naive
+    # datetime.now(). On a machine west of UTC in the evening, UTC has
+    # already rolled into the next calendar day while local hasn't — so
+    # GDELT's own live date can itself look "in the future" to gdeltPyR's
+    # local-time check. Clamp to whichever is earlier so the request never
+    # exceeds either reference frame's notion of "today."
+    local_today = datetime.now().date()
+    if end > local_today:
+        logger.info(
+            "GDELT's live date (%s, UTC-based) is ahead of local today (%s) — "
+            "using local today so gdeltPyR's own local-time validation doesn't reject it.",
+            end,
+            local_today,
+        )
+        end = local_today
     start = end - timedelta(days=lookback_days)
     date_range = [start.strftime("%Y %m %d"), end.strftime("%Y %m %d")]
 
