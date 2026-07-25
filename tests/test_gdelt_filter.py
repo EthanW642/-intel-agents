@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pandas as pd
 
-from agents.middle_east.sources import _gdelt_latest_available_date, fetch_gdelt
+from agents.middle_east.sources import _clean_gdelt_actor_name, _gdelt_latest_available_date, fetch_gdelt
 
 CFG = {
     "table": "events",
@@ -167,3 +167,40 @@ def test_fetch_gdelt_skips_cleanly_when_date_unknown():
         items = fetch_gdelt(CFG)
     assert items == []
     fake_gdelt_module.gdelt.assert_not_called()  # never even attempts Search()
+
+
+# ---- GDELT actor-name NaN cleaning (real bug: NaN is truthy in Python) ----
+
+
+def test_clean_actor_name_catches_float_nan():
+    assert _clean_gdelt_actor_name(float("nan")) is None
+
+
+def test_clean_actor_name_catches_none():
+    assert _clean_gdelt_actor_name(None) is None
+
+
+def test_clean_actor_name_catches_literal_nan_string():
+    assert _clean_gdelt_actor_name("nan") is None
+    assert _clean_gdelt_actor_name("NaN") is None
+
+
+def test_clean_actor_name_catches_empty_string():
+    assert _clean_gdelt_actor_name("") is None
+    assert _clean_gdelt_actor_name("   ") is None
+
+
+def test_clean_actor_name_passes_through_real_name():
+    assert _clean_gdelt_actor_name("IRAN") == "IRAN"
+    assert _clean_gdelt_actor_name("  Benjamin Netanyahu  ") == "Benjamin Netanyahu"
+
+
+def test_fetch_gdelt_drops_rows_with_no_identifiable_actor():
+    rows = [
+        _row(Actor1CountryCode="ISR", Actor1Name=float("nan"), Actor2Name=float("nan"), NumMentions=50),
+        _row(Actor1CountryCode="ISR", Actor1Name="Israel", Actor2Name=float("nan"), NumMentions=50),
+    ]
+    items = _fetch_with_rows(rows)
+    # Row 1 dropped (no identifiable actor at all); row 2 kept (one real actor).
+    assert len(items) == 1
+    assert "nan" not in items[0].text.lower()

@@ -87,6 +87,7 @@ def triage_items(
 
     total_batches = (len(items) + BATCH_SIZE - 1) // BATCH_SIZE
     surviving = []
+    fallback_count = 0
     for batch_num, batch_start in enumerate(range(0, len(items), BATCH_SIZE), start=1):
         batch = items[batch_start : batch_start + BATCH_SIZE]
         # Per-batch marker so a slow-but-working run is visibly
@@ -107,15 +108,30 @@ def triage_items(
             continue
 
         scores = _parse_scores(raw_content, len(batch), fallback_score=score_threshold)
+        batch_fallbacks = sum(1 for r in scores.values() if r["reason"].startswith("triage-parse-fallback"))
+        fallback_count += batch_fallbacks
         for i, item in enumerate(batch):
             result = scores[i]
             if result["score"] >= score_threshold:
                 item.raw_metadata["triage_score"] = result["score"]
                 item.raw_metadata["triage_reason"] = result["reason"]
                 surviving.append(item)
-        logger.info("Triage batch %d/%d done — %d survivors so far", batch_num, total_batches, len(surviving))
+        logger.info(
+            "Triage batch %d/%d done — %d survivors so far (%d fallback-scored this batch)",
+            batch_num,
+            total_batches,
+            len(surviving),
+            batch_fallbacks,
+        )
 
     logger.info(
-        "Triage: %d items scored, %d survived threshold %d", len(items), len(surviving), score_threshold
+        "Triage: %d items scored, %d survived threshold %d — of those survivors, "
+        "%d were genuine model scores and %d were parse-fallback pass-throughs "
+        "(not real judgments; investigate the raw Ollama output if this is high)",
+        len(items),
+        len(surviving),
+        score_threshold,
+        len(surviving) - fallback_count,
+        fallback_count,
     )
     return surviving

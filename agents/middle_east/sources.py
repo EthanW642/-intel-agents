@@ -63,6 +63,27 @@ def _truncate_words(text: str, n: int = 200) -> str:
     return " ".join(words[:n])
 
 
+def _clean_gdelt_actor_name(value) -> str | None:
+    """Normalize a GDELT actor-name field, returning None when it's
+    genuinely missing. `value or "unknown actor"`-style checks silently
+    fail on pandas' missing-value representation: a missing cell is a
+    float NaN, and NaN is *truthy* in Python (`bool(float("nan")) is
+    True`), so the `or` never fires and the literal text "nan" ends up
+    formatted straight into the event description — confirmed live
+    2026-07-25, where a real analysis run's input visibly contained the
+    string "nan" as an actor name. `x != x` is the standard NaN
+    self-inequality check (NaN is the only value unequal to itself).
+    """
+    if value is None:
+        return None
+    if isinstance(value, float) and value != value:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return None
+    return text
+
+
 GDELT_LASTUPDATE_URL = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
 
 
@@ -172,8 +193,15 @@ def fetch_gdelt(cfg: dict) -> list[RawItem]:
             url = row.get("SOURCEURL", "")
             if not url:
                 continue
-            a1 = row.get("Actor1Name") or "unknown actor"
-            a2 = row.get("Actor2Name") or "unknown actor"
+            a1_clean = _clean_gdelt_actor_name(row.get("Actor1Name"))
+            a2_clean = _clean_gdelt_actor_name(row.get("Actor2Name"))
+            if a1_clean is None and a2_clean is None:
+                # Neither actor is identifiable — a bilateral event
+                # description with no named party on either side is pure
+                # noise for the analysis stage, not a borderline case.
+                continue
+            a1 = a1_clean or "unknown actor"
+            a2 = a2_clean or "unknown actor"
             event_code = row.get("EventCode", "")
             tone = row.get("AvgTone", 0)
             desc = (
