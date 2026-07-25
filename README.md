@@ -192,28 +192,50 @@ trusting daily use:**
    - `sentence-transformers` downloads and runs `all-MiniLM-L6-v2` without
      error (only failed here due to the sandbox's network policy, not a
      code issue, but worth confirming for real).
-   - **In progress as of 2026-07-23**: a first live run surfaced a real bug
-     — `sources.yaml`'s GDELT `actor_country_codes` included `USA`/`TUR`,
-     and the match logic is OR-against-either-actor with no requirement
-     that the *other* actor be Middle East-relevant. Since the US is one
-     of the two actors in a huge share of all daily world diplomatic
-     events, this matched ~27,000 GDELT events for one day (spec targets
-     ~150-300/day total) and drove ~43 sequential local-triage Ollama
-     batches — real thermal-throttling risk on a fanless Air, exactly what
-     the spec's hardware note warns against. Fixed: removed `USA`/`TUR`
-     from `actor_country_codes` (a US-vs-actual-Middle-East-country event
-     still matches via the other actor; Turkey-located events still match
-     via `geo_country_codes`'s `TU`), raised `min_num_mentions` 5→10, and
-     added an actual `min_abs_goldstein` magnitude-floor check (the yaml
-     comment always claimed this existed; it didn't, until now) — an
-     event is kept if *either* threshold clears. Locked in with
-     `tests/test_gdelt_filter.py`. Also added per-batch progress logging
-     to `pipeline/triage.py` and `pipeline/predictions.py`, since the
-     previous log-nothing-until-the-end behavior made a slow-but-working
-     run indistinguishable from a hung one. **Re-run the pipeline after
-     pulling this fix and confirm GDELT's item count lands in a sane
-     range (tens, not tens of thousands) before trusting the daily
-     schedule.**
+   - **Live-run findings log (2026-07-23/24)** — real bugs found and fixed
+     while getting the first live run clean, kept here rather than
+     scrubbed from history since they're exactly the kind of thing that
+     resurfaces if the fix is forgotten:
+     1. **GDELT actor-code overmatching.** `actor_country_codes` included
+        `USA`/`TUR`, OR-matched against either actor with no requirement
+        that the *other* actor be Middle East-relevant — the US alone is a
+        party to a huge share of all daily world diplomatic events, so
+        this matched ~27,000 GDELT events for one day (spec targets
+        ~150-300/day total) and drove ~43 sequential local-triage Ollama
+        batches, a real thermal-throttling risk on a fanless Air per the
+        spec's own hardware note. Fixed: removed `USA`/`TUR` from
+        `actor_country_codes` (a US-vs-actual-Middle-East-country event
+        still matches via the other actor; Turkey-located events still
+        match via `geo_country_codes`'s `TU`), raised `min_num_mentions`
+        5→10, added a real `min_abs_goldstein` magnitude floor (the yaml
+        comment always claimed one existed; it didn't). Locked in with
+        `tests/test_gdelt_filter.py`.
+     2. **GDELT date rejected as "in the future."** First diagnosed (wrongly)
+        as a UTC-vs-local timezone bug and "fixed" by switching to local
+        time — that didn't work, because the real cause is that the test
+        machine's system clock reads 2026 while GDELT is a live
+        real-world service whose actual data doesn't extend that far yet.
+        No local date computation, in any timezone, can be correct against
+        a clock that's ahead of reality. Properly fixed: `fetch_gdelt` now
+        asks GDELT's own `lastupdate.txt` feed what its most recent
+        available date actually is and uses that, falling back to the
+        local date only if that live check itself fails.
+     3. **Sonnet call truncated at max effort, wrote back nothing.** A real
+        `effort=max` call on 68 items hit the old `analysis_max_tokens:
+        16000` cap during thinking, never reached the closing JSON
+        write-back block, and the $0.20 call persisted zero entities/
+        events/theses/predictions. Fixed: raised `analysis_max_tokens` to
+        64000, matching the documented minimum for xhigh/max effort.
+     4. Added per-batch progress logging to `pipeline/triage.py` and
+        `pipeline/predictions.py` — the previous log-nothing-until-the-end
+        behavior made a slow-but-working run indistinguishable from a
+        hung one, which is part of why (1) took a while to even notice.
+
+     **Re-run the pipeline after pulling these fixes** and confirm: GDELT's
+     item count lands in a sane range (tens, not tens of thousands or
+     zero), the run completes without a `ValueError` from GDELT, and the
+     final `Write-back complete` log line shows non-zero counts (assuming
+     the day's items actually warranted new entities/events).
    - The live Ollama triage call produces well-formed JSON in practice
      (the parser has a fallback path, but you want to see real output).
    - The Sonnet call actually produces the 6-part structure with sensible

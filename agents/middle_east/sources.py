@@ -7,8 +7,9 @@ which structured feed or RSS source an item came from.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import feedparser
@@ -62,6 +63,39 @@ def _truncate_words(text: str, n: int = 200) -> str:
     return " ".join(words[:n])
 
 
+GDELT_LASTUPDATE_URL = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
+
+
+def _gdelt_latest_available_date(timeout: float = 15.0) -> date | None:
+    """Ask GDELT's own live feed what its most recent available date
+    actually is, rather than trusting the local system clock at all.
+
+    Confirmed necessary 2026-07-24: switching the local date computation
+    from UTC to local time (an earlier, wrong diagnosis) did NOT fix
+    gdeltPyR's "One of your dates is greater than the current date" error,
+    because the real cause isn't a timezone mismatch — it's that this
+    machine's system clock reads dates GDELT's real service (running in
+    true wall-clock time) doesn't have data for yet. No local date
+    computation, in any timezone, can be correct here; the only reliable
+    source of "what's the latest real GDELT date" is GDELT itself. Falls
+    back to the local date if this live check fails for any reason
+    (network, unexpected response shape) so a GDELT outage degrades
+    gracefully instead of hard-failing ingestion outright.
+    """
+    try:
+        resp = httpx.get(GDELT_LASTUPDATE_URL, timeout=timeout)
+        resp.raise_for_status()
+        match = re.search(r"(\d{14})\.export\.CSV", resp.text)
+        if match:
+            return datetime.strptime(match.group(1)[:8], "%Y%m%d").date()
+    except Exception:
+        logger.warning(
+            "Could not determine GDELT's latest available date from %s; falling back to local date",
+            GDELT_LASTUPDATE_URL,
+        )
+    return None
+
+
 def fetch_gdelt(cfg: dict) -> list[RawItem]:
     """Pull GDELT 2.0 events for the region via the gdeltPyR package and
     filter to Middle East actor/geo country codes (spec 4.1)."""
@@ -77,14 +111,7 @@ def fetch_gdelt(cfg: dict) -> list[RawItem]:
     min_mentions = cfg.get("min_num_mentions", 0)
     min_abs_goldstein = cfg.get("min_abs_goldstein", 0)
 
-    # Use the local wall-clock date, not UTC. gdeltPyR's own date validation
-    # rejects any requested date past its notion of "today," and it computes
-    # that against local naive time (datetime.now(), no tz) — using UTC here
-    # produces a date that's already "tomorrow" locally whenever the machine
-    # is west of UTC and it's afternoon/evening (e.g. 5pm PDT = midnight UTC
-    # the next day), which gdeltPyR then rejects with "One of your dates is
-    # greater than the current date." Confirmed live 2026-07-23.
-    end = datetime.now().date()
+    end = _gdelt_latest_available_date() or datetime.now().date()
     start = end - timedelta(days=lookback_days)
     date_range = [start.strftime("%Y %m %d"), end.strftime("%Y %m %d")]
 

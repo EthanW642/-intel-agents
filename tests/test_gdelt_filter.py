@@ -1,9 +1,11 @@
 import sys
+from datetime import date
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pandas as pd
 
-from agents.middle_east.sources import fetch_gdelt
+from agents.middle_east.sources import _gdelt_latest_available_date, fetch_gdelt
 
 CFG = {
     "table": "events",
@@ -39,7 +41,12 @@ def _fetch_with_rows(rows: list[dict]):
     fake_gd_instance.Search.return_value = df
     fake_gdelt_module = MagicMock()
     fake_gdelt_module.gdelt.return_value = fake_gd_instance
-    with patch.dict(sys.modules, {"gdelt": fake_gdelt_module}):
+    # Filter-logic tests shouldn't depend on a real network call to GDELT's
+    # lastupdate endpoint (covered separately below) — force the local-date
+    # fallback path so these stay pure unit tests.
+    with patch.dict(sys.modules, {"gdelt": fake_gdelt_module}), patch(
+        "agents.middle_east.sources._gdelt_latest_available_date", return_value=None
+    ):
         return fetch_gdelt(CFG)
 
 
@@ -87,3 +94,35 @@ def test_missing_url_is_dropped_even_if_otherwise_matching():
     rows = [_row(Actor1CountryCode="ISR", NumMentions=50, SOURCEURL="")]
     items = _fetch_with_rows(rows)
     assert items == []
+
+
+# ---- GDELT live-date discovery (spec: don't trust a possibly-wrong local clock) ----
+
+
+def test_gdelt_latest_available_date_parses_real_response_shape():
+    fake_body = (
+        "12345 abc123 http://data.gdeltproject.org/gdeltv2/20250723176000.export.CSV.zip\n"
+        "67890 def456 http://data.gdeltproject.org/gdeltv2/20250723176000.mentions.CSV.zip\n"
+        "11121 ghi789 http://data.gdeltproject.org/gdeltv2/20250723176000.gkg.csv.zip\n"
+    )
+    fake_response = MagicMock()
+    fake_response.text = fake_body
+    fake_response.raise_for_status = MagicMock()
+    with patch("httpx.get", return_value=fake_response):
+        result = _gdelt_latest_available_date()
+    assert result == date(2025, 7, 23)
+
+
+def test_gdelt_latest_available_date_falls_back_to_none_on_network_failure():
+    with patch("httpx.get", side_effect=httpx.HTTPError("boom")):
+        result = _gdelt_latest_available_date()
+    assert result is None
+
+
+def test_gdelt_latest_available_date_falls_back_to_none_on_unexpected_body():
+    fake_response = MagicMock()
+    fake_response.text = "not the expected format at all"
+    fake_response.raise_for_status = MagicMock()
+    with patch("httpx.get", return_value=fake_response):
+        result = _gdelt_latest_available_date()
+    assert result is None
