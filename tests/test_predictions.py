@@ -1,7 +1,11 @@
 import json
 from unittest.mock import patch
 
+import httpx
+import pytest
+
 from agents.middle_east.sources import RawItem
+from pipeline.ollama_client import OllamaUnavailableError
 from pipeline.predictions import _parse_verdicts, resolve_predictions
 
 
@@ -50,3 +54,11 @@ def test_resolve_predictions_only_returns_non_pending():
 def test_resolve_predictions_empty_inputs_short_circuit():
     assert resolve_predictions([], [_item("x")], ollama_host="http://x", model="m") == []
     assert resolve_predictions([{"id": 1, "claim": "x", "target_date": None}], [], ollama_host="http://x", model="m") == []
+
+
+def test_resolve_predictions_raises_ollama_unavailable_when_every_batch_fails_to_connect():
+    pending = [{"id": 1, "claim": "x", "target_date": None}]
+    items = [_item("y")]
+    with patch("pipeline.predictions.call_ollama", side_effect=httpx.ConnectError("refused")):
+        with pytest.raises(OllamaUnavailableError):
+            resolve_predictions(pending, items, ollama_host="http://x", model="m")

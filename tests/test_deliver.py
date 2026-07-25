@@ -2,7 +2,7 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
-from pipeline.deliver import _build_message, _subject_for, send_briefing_email
+from pipeline.deliver import _build_message, _subject_for, send_briefing_email, send_ollama_outage_alert
 
 
 def test_subject_format_static_and_parseable():
@@ -66,3 +66,31 @@ def test_send_briefing_email_fails_after_retry_but_does_not_raise(tmp_path):
     assert result["sent"] is False
     assert result["retried"] is True
     assert "smtp down" in result["error"]
+
+
+def test_ollama_outage_alert_subject_and_body_distinct_from_briefing():
+    with patch("pipeline.deliver._send_once") as mock_send:
+        result = send_ollama_outage_alert(
+            "All 19 triage batches failed to reach Ollama at http://localhost:11434 (model=qwen2.5:14b)",
+            "me@gmail.com",
+            "app-password",
+            date(2026, 7, 25),
+        )
+
+    assert result == {"sent": True, "retried": False, "error": None}
+    sent_msg = mock_send.call_args[0][2]
+    assert "ALERT" in sent_msg["Subject"]
+    assert "July 25, 2026" in sent_msg["Subject"]
+    body = sent_msg.get_payload()[0].get_payload(decode=True).decode("utf-8")
+    assert "not a quiet news day" in body
+    assert "All 19 triage batches failed" in body
+
+
+def test_ollama_outage_alert_retries_once_then_succeeds():
+    with patch("pipeline.deliver._send_once", side_effect=[Exception("smtp down"), None]), patch(
+        "pipeline.deliver.time.sleep"
+    ) as mock_sleep:
+        result = send_ollama_outage_alert("boom", "me@gmail.com", "app-password", date(2026, 7, 25))
+
+    assert result == {"sent": True, "retried": True, "error": None}
+    mock_sleep.assert_called_once()

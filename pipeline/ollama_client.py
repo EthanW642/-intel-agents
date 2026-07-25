@@ -9,6 +9,14 @@ import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 
+class OllamaUnavailableError(Exception):
+    """Raised when every batch in a triage or prediction-resolution run
+    failed to reach Ollama at all (connection-level failure, not a parse
+    error) — signals a local infrastructure outage rather than a
+    genuinely quiet day, so the caller should abort before spending on the
+    Sonnet call rather than silently reporting zero survivors."""
+
+
 @retry(
     retry=retry_if_exception_type(httpx.HTTPError),
     stop=stop_after_attempt(3),

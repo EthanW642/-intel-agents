@@ -1,7 +1,11 @@
 import json
 from unittest.mock import patch
 
+import httpx
+import pytest
+
 from agents.middle_east.sources import RawItem
+from pipeline.ollama_client import OllamaUnavailableError
 from pipeline.triage import _parse_scores, triage_items
 
 
@@ -51,3 +55,40 @@ def test_triage_preserves_tier_metadata():
 
     assert survivors[0].raw_metadata["tier"] == 2
     assert survivors[0].raw_metadata["triage_score"] == 9
+
+
+def test_triage_raises_ollama_unavailable_when_every_batch_fails_to_connect():
+    # Regression for a real run (2026-07-25): Ollama wasn't running, all 19
+    # triage batches hit httpx.ConnectError, and the pipeline silently
+    # proceeded to a Sonnet call reporting "0 items survived triage" —
+    # indistinguishable from a genuinely quiet news day. A total connection
+    # outage must be surfaced distinctly, not swallowed into "0 survivors."
+    items = [_item("a"), _item("b")]
+    with patch("pipeline.triage.call_ollama", side_effect=httpx.ConnectError("refused")):
+        with pytest.raises(OllamaUnavailableError):
+            triage_items(items, entities=[], theses=[], ollama_host="http://x", model="m", score_threshold=6)
+
+
+def test_triage_does_not_raise_when_only_some_batches_fail_to_connect():
+    # A partial outage (some batches fine, some fail) is a normal degraded
+    # run, not a total-infrastructure-down situation — must not abort.
+    items = [_item(f"item{i}") for i in range(25)]  # 2 batches (BATCH_SIZE=20)
+    responses = [
+        json.dumps([{"index": i, "score": 9, "reason": "x"} for i in range(20)]),
+        httpx.ConnectError("refused"),
+    ]
+
+    def fake_call(*args, **kwargs):
+        result = responses.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    with patch("pipeline.triage.call_ollama", side_effect=fake_call):
+        survivors = triage_items(items, entities=[], theses=[], ollama_host="http://x", model="m", score_threshold=6)
+
+    assert len(survivors) == 20  # first batch's real survivors, second batch just skipped
+
+
+def test_triage_does_not_raise_when_items_list_is_empty():
+    assert triage_items([], entities=[], theses=[], ollama_host="http://x", model="m", score_threshold=6) == []

@@ -257,6 +257,38 @@ trusting daily use:**
         `pipeline/predictions.py` — the previous log-nothing-until-the-end
         behavior made a slow-but-working run indistinguishable from a
         hung one, which is part of why (1) took a while to even notice.
+     6. **Literal `"nan"` in GDELT actor names.** A real run's analysis
+        input visibly contained the string "nan" as an actor name. Cause:
+        `row.get("Actor1Name") or "unknown actor"`-style fallbacks don't
+        catch pandas' missing-value representation, because a missing cell
+        is a float `NaN` and `NaN` is *truthy* in Python
+        (`bool(float("nan")) is True`) — the `or` never fires. Fixed with
+        `_clean_gdelt_actor_name()`, which uses `x != x` (the standard NaN
+        self-inequality check) to actually detect it; rows where *neither*
+        actor is identifiable are now dropped entirely rather than
+        described as "unknown actor -> unknown actor," which is pure noise.
+        Locked in with `tests/test_gdelt_filter.py`.
+     7. **An Ollama outage looked identical to a quiet news day.** A real
+        run had Ollama unreachable (`ollama serve` not running) for the
+        entire run — all 19 triage batches and the prediction-resolution
+        batch failed with `httpx.ConnectError: Connection refused`. The
+        pipeline didn't crash (by design, connection failures are caught
+        per-batch), but it then proceeded anyway to a Sonnet call that
+        correctly reported "no items survived triage" — a $0.02 email
+        that, in isolation, is indistinguishable from a genuinely quiet
+        day. Fixed: `triage_items`/`resolve_predictions` now raise
+        `OllamaUnavailableError` (`pipeline/ollama_client.py`) when *every*
+        batch in a run failed to even reach Ollama (a partial outage —
+        some batches fine, some not — still degrades gracefully as before,
+        since that's a real signal, not an infrastructure failure).
+        `agents/middle_east/run.py` catches this specifically, aborts
+        before the Sonnet call entirely (no spend on a run with nothing
+        real to analyze), and sends a distinct plain-text alert email
+        (`pipeline/deliver.py::send_ollama_outage_alert`) instead of a
+        briefing, so an outage is never silently mistaken for "nothing
+        happened." Locked in with `tests/test_triage.py`,
+        `tests/test_predictions.py`, `tests/test_deliver.py`, and an
+        orchestration-level test in `tests/test_run.py`.
 
      **First full clean run confirmed (2026-07-24):** cold-start handling
      ("no established pattern yet," not fabricated continuity), source

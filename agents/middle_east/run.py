@@ -15,8 +15,9 @@ from dotenv import load_dotenv
 from agents.middle_east.ingest import run_ingest
 from pipeline.analyze import run_analysis
 from pipeline.dedup import dedup_items
-from pipeline.deliver import send_briefing_email
+from pipeline.deliver import send_briefing_email, send_ollama_outage_alert
 from pipeline.memory import init_store, query_memory, write_back
+from pipeline.ollama_client import OllamaUnavailableError
 from pipeline.predictions import resolve_predictions
 from pipeline.render import render_briefing
 from pipeline.run_log import write_run_log_row
@@ -140,6 +141,30 @@ def run() -> Path | None:
             result["effort"],
         )
         return briefing_path
+    except OllamaUnavailableError as exc:
+        # Every triage/prediction-resolution batch failed to reach Ollama —
+        # a local infrastructure outage, not a quiet news day. Abort before
+        # the Sonnet call (nothing real to analyze) and send a plain-text
+        # alert instead of the briefing, so the outage is never silently
+        # mistaken for "nothing happened today."
+        logger.error("Aborting before Sonnet call: %s", exc)
+        log_row["ollama_outage"] = True
+        log_row["pipeline_error"] = str(exc)
+        gmail_address = os.environ.get("GMAIL_ADDRESS")
+        gmail_app_password = os.environ.get("GMAIL_APP_PASSWORD")
+        if gmail_address and gmail_app_password:
+            alert_result = send_ollama_outage_alert(str(exc), gmail_address, gmail_app_password, run_date)
+            log_row.update(
+                {
+                    "email_sent": alert_result["sent"],
+                    "email_retried": alert_result["retried"],
+                    "email_error": alert_result["error"] or "",
+                }
+            )
+        else:
+            logger.warning("GMAIL_ADDRESS/GMAIL_APP_PASSWORD not set — cannot send outage alert email")
+            log_row.update({"email_sent": False, "email_retried": False, "email_error": "credentials not configured"})
+        return None
     except Exception as exc:
         logger.exception("Pipeline run failed")
         log_row["pipeline_error"] = str(exc)

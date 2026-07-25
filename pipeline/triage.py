@@ -13,7 +13,7 @@ from pathlib import Path
 
 import httpx
 
-from pipeline.ollama_client import call_ollama
+from pipeline.ollama_client import OllamaUnavailableError, call_ollama
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,7 @@ def triage_items(
     total_batches = (len(items) + BATCH_SIZE - 1) // BATCH_SIZE
     surviving = []
     fallback_count = 0
+    connection_failures = 0
     for batch_num, batch_start in enumerate(range(0, len(items), BATCH_SIZE), start=1):
         batch = items[batch_start : batch_start + BATCH_SIZE]
         # Per-batch marker so a slow-but-working run is visibly
@@ -105,6 +106,7 @@ def triage_items(
                 batch_start,
                 model,
             )
+            connection_failures += 1
             continue
 
         scores = _parse_scores(raw_content, len(batch), fallback_score=score_threshold)
@@ -122,6 +124,16 @@ def triage_items(
             total_batches,
             len(surviving),
             batch_fallbacks,
+        )
+
+    if total_batches > 0 and connection_failures == total_batches:
+        # Every single batch failed to even reach Ollama — this is a local
+        # infrastructure outage, not a quiet news day. Left unchecked, this
+        # looks identical to "0 items survived triage" and the pipeline
+        # would proceed to spend a Sonnet call analyzing nothing real.
+        raise OllamaUnavailableError(
+            f"All {total_batches} triage batches failed to reach Ollama at {ollama_host} "
+            f"(model={model}) — is `ollama serve` running?"
         )
 
     logger.info(

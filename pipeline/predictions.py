@@ -14,7 +14,7 @@ from pathlib import Path
 
 import httpx
 
-from pipeline.ollama_client import call_ollama
+from pipeline.ollama_client import OllamaUnavailableError, call_ollama
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,7 @@ def resolve_predictions(
     items_block = _build_items_block(todays_items)
     resolutions: list[dict] = []
     total_batches = (len(pending_predictions) + BATCH_SIZE - 1) // BATCH_SIZE
+    connection_failures = 0
 
     for batch_num, batch_start in enumerate(range(0, len(pending_predictions), BATCH_SIZE), start=1):
         batch = pending_predictions[batch_start : batch_start + BATCH_SIZE]
@@ -97,6 +98,7 @@ def resolve_predictions(
                 "Ollama prediction-resolution call failed for batch starting at %d; "
                 "leaving these predictions pending", batch_start
             )
+            connection_failures += 1
             continue
 
         verdicts = _parse_verdicts(raw_content, len(batch))
@@ -104,6 +106,12 @@ def resolve_predictions(
             v = verdicts[i]
             if v["verdict"] != "pending":
                 resolutions.append({"id": pred["id"], "verdict": v["verdict"], "reason": v["reason"]})
+
+    if total_batches > 0 and connection_failures == total_batches:
+        raise OllamaUnavailableError(
+            f"All {total_batches} prediction-resolution batches failed to reach Ollama at "
+            f"{ollama_host} (model={model}) — is `ollama serve` running?"
+        )
 
     logger.info(
         "Prediction resolution check: %d pending checked, %d resolved this run",

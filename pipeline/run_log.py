@@ -35,6 +35,7 @@ FIELDS = [
     "email_retried",
     "email_error",
     "pipeline_error",
+    "ollama_outage",
 ]
 
 
