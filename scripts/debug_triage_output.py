@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import yaml
 
 from pipeline.ollama_client import call_ollama
-from pipeline.triage import _build_batch_block, _build_context_block, _load_system_prompt
+from pipeline.triage import _build_batch_block, _build_context_block, _load_system_prompt, _triage_response_schema
 from agents.middle_east.sources import RawItem
 
 WATCHLIST_PATH = Path(__file__).parent.parent / "config" / "watchlists.yaml"
@@ -47,17 +47,29 @@ def main() -> None:
     context_block = _build_context_block(entities=[], theses=[])
     user_prompt = f"{context_block}\n## Items to score\n{_build_batch_block(items)}"
 
-    print("=== Calling Ollama ===", file=sys.stderr)
-    raw = call_ollama(
+    print("=== Calling Ollama with bare 'format': 'json' (the OLD behavior) ===", file=sys.stderr)
+    raw_bare = call_ollama(
         pipeline_cfg["ollama_host"],
         pipeline_cfg["triage_model"],
         system_prompt,
         user_prompt,
+        response_format="json",
     )
-    print("=== RAW RESPONSE (repr, so whitespace/wrapping is visible) ===")
-    print(repr(raw))
-    print("\n=== RAW RESPONSE (printed) ===")
-    print(raw)
+    print("--- bare json-mode response (repr) ---")
+    print(repr(raw_bare))
+
+    print("\n=== Calling Ollama with a schema pinned to 2 items (the FIXED behavior) ===", file=sys.stderr)
+    raw_schema = call_ollama(
+        pipeline_cfg["ollama_host"],
+        pipeline_cfg["triage_model"],
+        system_prompt,
+        user_prompt,
+        response_format=_triage_response_schema(len(items)),
+    )
+    print("--- schema-constrained response (repr) ---")
+    print(repr(raw_schema))
+    print("\n--- schema-constrained response (printed) ---")
+    print(raw_schema)
 
 
 if __name__ == "__main__":

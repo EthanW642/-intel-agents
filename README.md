@@ -290,6 +290,34 @@ trusting daily use:**
         `tests/test_predictions.py`, `tests/test_deliver.py`, and an
         orchestration-level test in `tests/test_run.py`.
 
+     8. **Triage silently scored nothing — 0 genuine, 100% parse-fallback.**
+        A real run showed `383 items scored, 383 survived ... 0 were
+        genuine model scores and 383 were parse-fallback pass-throughs` —
+        every batch. Worse, the inflated (unfiltered) item count also
+        tripped `xhigh` effort, so the run cost $0.42 analyzing essentially
+        raw, untriaged input. Root cause, confirmed via a zero-cost
+        diagnostic (`scripts/debug_triage_output.py`) that calls Ollama
+        directly outside the full pipeline: the old `"format": "json"`
+        request only guarantees *valid* JSON, not a particular shape — on
+        a 2-item batch, qwen2.5:14b returned a single `{"index": 0,
+        "score": ..., "reason": ...}` object instead of a 2-element array,
+        silently ignoring the prompt's "one entry per item" instruction.
+        `json.loads` succeeded (so no parse error was ever logged), but
+        iterating the resulting dict's keys as if they were array entries
+        threw `TypeError` on every one, which the existing per-entry
+        `except` swallowed — so every item in every batch fell through to
+        the fallback path with no visible error at all. Fixed: `call_ollama`
+        now accepts a `response_format` (a JSON Schema, not just the bare
+        `"json"` string) — Ollama's actual mechanism for constraining
+        output shape — and both `pipeline/triage.py` and
+        `pipeline/predictions.py` now build a schema per batch with
+        `minItems`/`maxItems` pinned to that batch's exact size, forcing
+        one entry per input item rather than trusting the model to comply
+        with a prose instruction. Locked in with schema-shape tests and a
+        test asserting the schema is actually passed to `call_ollama` with
+        the right batch size, in `tests/test_triage.py` and
+        `tests/test_predictions.py`.
+
      **First full clean run confirmed (2026-07-24):** cold-start handling
      ("no established pattern yet," not fabricated continuity), source
      tiering, evidence-gated thesis evaluation, the 2-hop inference cap

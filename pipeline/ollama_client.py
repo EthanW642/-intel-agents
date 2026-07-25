@@ -23,7 +23,24 @@ class OllamaUnavailableError(Exception):
     wait=wait_exponential(multiplier=1, min=2, max=10),
     reraise=True,
 )
-def call_ollama(host: str, model: str, system_prompt: str, user_prompt: str, timeout: float = 180.0) -> str:
+def call_ollama(
+    host: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    timeout: float = 180.0,
+    response_format: str | dict = "json",
+) -> str:
+    """`response_format` defaults to the bare `"json"` mode (valid JSON, any
+    shape) but callers doing batch scoring should pass a JSON Schema dict
+    instead — confirmed live 2026-07-25 that bare "json" mode lets the model
+    return a single object instead of a per-item array (it silently scored
+    only item 0 of a 2-item batch), which is indistinguishable from a parse
+    failure downstream. A schema with minItems/maxItems pinned to the batch
+    size (see pipeline/triage.py, pipeline/predictions.py) is Ollama's actual
+    mechanism for enforcing "one entry per input item," not a prompt
+    instruction the model can choose to ignore.
+    """
     resp = httpx.post(
         f"{host}/api/chat",
         json={
@@ -32,7 +49,7 @@ def call_ollama(host: str, model: str, system_prompt: str, user_prompt: str, tim
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "format": "json",
+            "format": response_format,
             "stream": False,
         },
         timeout=timeout,

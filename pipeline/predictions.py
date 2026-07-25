@@ -26,6 +26,27 @@ def _load_system_prompt() -> str:
     return RESOLUTION_PROMPT_PATH.read_text()
 
 
+def _resolution_response_schema(batch_len: int) -> dict:
+    """A JSON Schema pinning the response to exactly one {index, verdict,
+    reason} object per pending prediction in the batch — see
+    pipeline/ollama_client.py::call_ollama's docstring for why this, rather
+    than bare "format": "json", is required."""
+    return {
+        "type": "array",
+        "minItems": batch_len,
+        "maxItems": batch_len,
+        "items": {
+            "type": "object",
+            "properties": {
+                "index": {"type": "integer"},
+                "verdict": {"type": "string", "enum": ["confirmed", "contradicted", "pending"]},
+                "reason": {"type": "string"},
+            },
+            "required": ["index", "verdict", "reason"],
+        },
+    }
+
+
 def _build_predictions_block(predictions: list) -> str:
     lines = []
     for i, p in enumerate(predictions):
@@ -92,7 +113,13 @@ def resolve_predictions(
             f"## Pending predictions\n{predictions_block}\n\n## Today's items\n{items_block}\n"
         )
         try:
-            raw_content = call_ollama(ollama_host, model, system_prompt, user_prompt)
+            raw_content = call_ollama(
+                ollama_host,
+                model,
+                system_prompt,
+                user_prompt,
+                response_format=_resolution_response_schema(len(batch)),
+            )
         except httpx.HTTPError:
             logger.exception(
                 "Ollama prediction-resolution call failed for batch starting at %d; "

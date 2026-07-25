@@ -38,6 +38,26 @@ def _build_context_block(entities: list, theses: list) -> str:
     )
 
 
+def _triage_response_schema(batch_len: int) -> dict:
+    """A JSON Schema pinning the response to exactly one {index, score,
+    reason} object per input item — see call_ollama's docstring for why a
+    schema, not just "format": "json", is required to actually get this."""
+    return {
+        "type": "array",
+        "minItems": batch_len,
+        "maxItems": batch_len,
+        "items": {
+            "type": "object",
+            "properties": {
+                "index": {"type": "integer"},
+                "score": {"type": "integer"},
+                "reason": {"type": "string"},
+            },
+            "required": ["index", "score", "reason"],
+        },
+    }
+
+
 def _build_batch_block(items: list) -> str:
     lines = []
     for i, item in enumerate(items):
@@ -98,7 +118,13 @@ def triage_items(
         logger.info("Triage batch %d/%d (%d items)...", batch_num, total_batches, len(batch))
         user_prompt = f"{context_block}\n## Items to score\n{_build_batch_block(batch)}"
         try:
-            raw_content = call_ollama(ollama_host, model, system_prompt, user_prompt)
+            raw_content = call_ollama(
+                ollama_host,
+                model,
+                system_prompt,
+                user_prompt,
+                response_format=_triage_response_schema(len(batch)),
+            )
         except httpx.HTTPError:
             logger.exception(
                 "Ollama triage call failed after retries for batch starting at %d; "

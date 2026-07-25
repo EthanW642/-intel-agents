@@ -6,7 +6,7 @@ import pytest
 
 from agents.middle_east.sources import RawItem
 from pipeline.ollama_client import OllamaUnavailableError
-from pipeline.predictions import _parse_verdicts, resolve_predictions
+from pipeline.predictions import _parse_verdicts, _resolution_response_schema, resolve_predictions
 
 
 def _item(title: str, text: str = "") -> RawItem:
@@ -62,3 +62,22 @@ def test_resolve_predictions_raises_ollama_unavailable_when_every_batch_fails_to
     with patch("pipeline.predictions.call_ollama", side_effect=httpx.ConnectError("refused")):
         with pytest.raises(OllamaUnavailableError):
             resolve_predictions(pending, items, ollama_host="http://x", model="m")
+
+
+def test_resolution_response_schema_pins_array_length_to_batch_size():
+    schema = _resolution_response_schema(4)
+    assert schema["minItems"] == 4
+    assert schema["maxItems"] == 4
+    assert schema["items"]["properties"]["verdict"]["enum"] == ["confirmed", "contradicted", "pending"]
+
+
+def test_resolve_predictions_passes_schema_constrained_format_to_ollama():
+    pending = [{"id": 1, "claim": "x", "target_date": None}, {"id": 2, "claim": "y", "target_date": None}]
+    items = [_item("z")]
+    raw_response = json.dumps([{"index": 0, "verdict": "pending", "reason": ""}, {"index": 1, "verdict": "pending", "reason": ""}])
+    with patch("pipeline.predictions.call_ollama", return_value=raw_response) as mock_call:
+        resolve_predictions(pending, items, ollama_host="http://x", model="m")
+
+    _, kwargs = mock_call.call_args
+    assert kwargs["response_format"]["minItems"] == 2
+    assert kwargs["response_format"]["maxItems"] == 2

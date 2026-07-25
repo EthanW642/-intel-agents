@@ -6,7 +6,7 @@ import pytest
 
 from agents.middle_east.sources import RawItem
 from pipeline.ollama_client import OllamaUnavailableError
-from pipeline.triage import _parse_scores, triage_items
+from pipeline.triage import _parse_scores, _triage_response_schema, triage_items
 
 
 def _item(title: str) -> RawItem:
@@ -92,3 +92,27 @@ def test_triage_does_not_raise_when_only_some_batches_fail_to_connect():
 
 def test_triage_does_not_raise_when_items_list_is_empty():
     assert triage_items([], entities=[], theses=[], ollama_host="http://x", model="m", score_threshold=6) == []
+
+
+def test_triage_response_schema_pins_array_length_to_batch_size():
+    schema = _triage_response_schema(7)
+    assert schema["type"] == "array"
+    assert schema["minItems"] == 7
+    assert schema["maxItems"] == 7
+    assert schema["items"]["required"] == ["index", "score", "reason"]
+
+
+def test_triage_passes_schema_constrained_format_to_ollama():
+    # Regression for the real bug (2026-07-25): bare "format": "json" let
+    # qwen2.5:14b return a single object instead of a per-item array,
+    # scoring only item 0 of a 2-item batch — every other item silently
+    # fell back. A JSON Schema pinned to the batch size is what actually
+    # forces "one entry per item," not the prompt's array instruction.
+    items = [_item("a"), _item("b"), _item("c")]
+    raw_response = json.dumps([{"index": i, "score": 7, "reason": "x"} for i in range(3)])
+    with patch("pipeline.triage.call_ollama", return_value=raw_response) as mock_call:
+        triage_items(items, entities=[], theses=[], ollama_host="http://x", model="m", score_threshold=6)
+
+    _, kwargs = mock_call.call_args
+    assert kwargs["response_format"]["minItems"] == 3
+    assert kwargs["response_format"]["maxItems"] == 3
