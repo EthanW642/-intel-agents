@@ -77,23 +77,32 @@ def _gdelt_latest_available_date(timeout: float = 15.0) -> date | None:
     machine's system clock reads dates GDELT's real service (running in
     true wall-clock time) doesn't have data for yet. No local date
     computation, in any timezone, can be correct here; the only reliable
-    source of "what's the latest real GDELT date" is GDELT itself. Falls
-    back to the local date if this live check fails for any reason
-    (network, unexpected response shape) so a GDELT outage degrades
-    gracefully instead of hard-failing ingestion outright.
+    source of "what's the latest real GDELT date" is GDELT itself. Returns
+    None if this live check fails for any reason (network, unexpected
+    response shape) — the caller treats None as "skip GDELT this run"
+    rather than falling back to the local clock, since that fallback is
+    exactly what's known to be broken in this environment.
     """
     try:
         resp = httpx.get(GDELT_LASTUPDATE_URL, timeout=timeout)
         resp.raise_for_status()
-        match = re.search(r"(\d{14})\.export\.CSV", resp.text)
-        if match:
-            return datetime.strptime(match.group(1)[:8], "%Y%m%d").date()
     except Exception:
         logger.warning(
-            "Could not determine GDELT's latest available date from %s; falling back to local date",
+            "Could not reach GDELT's lastupdate feed at %s; skipping GDELT this run",
             GDELT_LASTUPDATE_URL,
         )
-    return None
+        return None
+
+    match = re.search(r"(\d{14})\.export\.CSV", resp.text)
+    if not match:
+        logger.warning(
+            "GDELT's lastupdate feed responded but didn't match the expected format "
+            "(got: %r); skipping GDELT this run. The response format may have changed "
+            "— update the regex in _gdelt_latest_available_date if this persists.",
+            resp.text[:200],
+        )
+        return None
+    return datetime.strptime(match.group(1)[:8], "%Y%m%d").date()
 
 
 def fetch_gdelt(cfg: dict) -> list[RawItem]:
@@ -111,7 +120,15 @@ def fetch_gdelt(cfg: dict) -> list[RawItem]:
     min_mentions = cfg.get("min_num_mentions", 0)
     min_abs_goldstein = cfg.get("min_abs_goldstein", 0)
 
-    end = _gdelt_latest_available_date() or datetime.now().date()
+    end = _gdelt_latest_available_date()
+    if end is None:
+        # Do not fall back to the local clock here — that fallback is
+        # exactly what's broken in this environment (system clock reads
+        # 2026; GDELT's real data doesn't extend that far), so attempting
+        # the Search() call with it would just reproduce the same
+        # ValueError every run. A clean skip beats a guaranteed crash.
+        logger.warning("Skipping GDELT this run — could not determine a valid query date")
+        return []
     start = end - timedelta(days=lookback_days)
     date_range = [start.strftime("%Y %m %d"), end.strftime("%Y %m %d")]
 
