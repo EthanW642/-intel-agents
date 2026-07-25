@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import feedparser
@@ -77,7 +77,14 @@ def fetch_gdelt(cfg: dict) -> list[RawItem]:
     min_mentions = cfg.get("min_num_mentions", 0)
     min_abs_goldstein = cfg.get("min_abs_goldstein", 0)
 
-    end = datetime.now(timezone.utc).date()
+    # Use the local wall-clock date, not UTC. gdeltPyR's own date validation
+    # rejects any requested date past its notion of "today," and it computes
+    # that against local naive time (datetime.now(), no tz) — using UTC here
+    # produces a date that's already "tomorrow" locally whenever the machine
+    # is west of UTC and it's afternoon/evening (e.g. 5pm PDT = midnight UTC
+    # the next day), which gdeltPyR then rejects with "One of your dates is
+    # greater than the current date." Confirmed live 2026-07-23.
+    end = datetime.now().date()
     start = end - timedelta(days=lookback_days)
     date_range = [start.strftime("%Y %m %d"), end.strftime("%Y %m %d")]
 
