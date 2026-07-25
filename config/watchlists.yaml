@@ -55,14 +55,30 @@ pipeline:
   # load above effort_medium_max_load runs at "high" — and stays at "high"
   # regardless of how much higher the load goes, UNLESS the explicit
   # escalation gates below are also met. Escalating past "high" requires
-  # BOTH a real item-volume signal AND at least one active thesis actually
-  # in play this run (an approximation — which theses get a real
-  # evidentiary trigger is only known inside the call itself; the count of
-  # currently-active theses is the best pre-call proxy).
+  # BOTH a real item-volume signal AND active theses actually in play this
+  # run (an approximation — which theses get a real evidentiary trigger is
+  # only known inside the call itself; the count of currently-active
+  # theses is the best pre-call proxy).
+  #
+  # xhigh_min_active_theses/max_min_active_theses were 1/2 — too low.
+  # Confirmed live 2026-07-24: the 2 permanently-seeded standing theses
+  # (Khamenei succession, escalation/de-escalation signaling) never expire
+  # on their own, so "active_theses >= 2" was satisfied unconditionally,
+  # every single day, forever — leaving only the item-count gate doing any
+  # real work, and a real run saw 100% triage survival (68/68) from just
+  # the RSS feeds alone. That combination made "max" effort the routine
+  # daily outcome rather than the reserved-for-genuinely-heavy-days
+  # behavior this was designed for. First attempt raised both by 1
+  # (1->2, 2->3) — verified that was still wrong: with exactly 2 permanent
+  # seed theses, "active_theses >= 2" still holds, so xhigh still
+  # auto-escalated every day, just one tier lower than before. Both
+  # thresholds must be strictly greater than 2 (the permanent count) to
+  # actually require a NEW thesis to have formed, not just the seed set —
+  # set to 3/4.
   xhigh_min_triaged_items: 20
-  xhigh_min_active_theses: 1
+  xhigh_min_active_theses: 3
   max_min_triaged_items: 35
-  max_min_active_theses: 2
+  max_min_active_theses: 4
 
   # Daily schedule for the full pipeline run (local time). Spec targets a
   # 5:30am run, completion/send by 6:15, buffer before a 6:30 read time.
