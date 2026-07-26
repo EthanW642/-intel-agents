@@ -31,6 +31,7 @@ FIELDS = [
     "thesis_updates_applied",
     "thesis_updates_rejected",
     "new_predictions",
+    "malformed_entries_skipped",
     "email_sent",
     "email_retried",
     "email_error",

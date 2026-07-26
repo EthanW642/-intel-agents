@@ -138,14 +138,22 @@ def query_memory(
 
 def write_back(conn: sqlite3.Connection, collection, domain: str, analysis_json: dict, run_date: str) -> dict:
     """Persist Sonnet's structured JSON write-back block to SQLite + Chroma.
-    Returns a summary dict of what was written, for the run log."""
+    Returns a summary dict of what was written, for the run log.
+
+    Unlike the Ollama calls (triage, prediction resolution), Sonnet's JSON
+    block has no schema-enforced structure — it's prompt-following inside a
+    larger prose response, so a missing/malformed field on any one entry is
+    plausible. Each per-item loop below is individually guarded: a
+    malformed entry is logged and skipped, not allowed to crash the whole
+    write-back — losing an already-paid-for day's entire briefing/email
+    over one bad entity/event/relationship would be far worse than losing
+    just that one entry.
+    """
     entity_name_to_id: dict[str, int] = {}
     for row in db.get_entities(conn, domain):
         entity_name_to_id[row["name"]] = row["id"]
 
-    for ent in analysis_json.get("new_entities", []):
-        eid = db.upsert_entity(conn, domain, ent["name"], ent.get("type", "unknown"), ent.get("notes", ""))
-        entity_name_to_id[ent["name"]] = eid
+    malformed_skipped = 0
 
     def resolve_entity(name: str) -> int | None:
         if name in entity_name_to_id:
@@ -154,93 +162,126 @@ def write_back(conn: sqlite3.Connection, collection, domain: str, analysis_json:
         entity_name_to_id[name] = eid
         return eid
 
-    for rel in analysis_json.get("new_relationships", []):
-        a_id = resolve_entity(rel["entity_a"])
-        b_id = resolve_entity(rel["entity_b"])
-        db.upsert_relationship(conn, domain, a_id, b_id, rel["type"], rel.get("description", ""))
+    new_entities_written = 0
+    for ent in analysis_json.get("new_entities", []):
+        try:
+            eid = db.upsert_entity(conn, domain, ent["name"], ent.get("type", "unknown"), ent.get("notes", ""))
+            entity_name_to_id[ent["name"]] = eid
+            new_entities_written += 1
+        except (KeyError, TypeError) as exc:
+            logger.warning("Skipping malformed new_entities entry (%s): %r", exc, ent)
+            malformed_skipped += 1
 
+    new_relationships_written = 0
+    for rel in analysis_json.get("new_relationships", []):
+        try:
+            a_id = resolve_entity(rel["entity_a"])
+            b_id = resolve_entity(rel["entity_b"])
+            db.upsert_relationship(conn, domain, a_id, b_id, rel["type"], rel.get("description", ""))
+            new_relationships_written += 1
+        except (KeyError, TypeError) as exc:
+            logger.warning("Skipping malformed new_relationships entry (%s): %r", exc, rel)
+            malformed_skipped += 1
+
+    new_events_written = 0
     for evt in analysis_json.get("new_events", []):
-        entity_ids = [resolve_entity(name) for name in evt.get("entities", [])]
-        event_id = db.insert_event(
-            conn,
-            domain,
-            evt["date"],
-            evt["description"],
-            evt.get("event_type", "unspecified"),
-            float(evt.get("confidence", 0.5)),
-            evt.get("source_urls", []),
-            entity_ids,
-        )
-        cc.add_event(
-            collection,
-            event_id=f"{domain}_{event_id}",
-            summary=evt["description"],
-            metadata={"date": evt["date"], "event_type": evt.get("event_type", "unspecified"), "sqlite_event_id": event_id},
-        )
+        try:
+            entity_ids = [resolve_entity(name) for name in evt.get("entities", [])]
+            event_id = db.insert_event(
+                conn,
+                domain,
+                evt["date"],
+                evt["description"],
+                evt.get("event_type", "unspecified"),
+                float(evt.get("confidence", 0.5)),
+                evt.get("source_urls", []),
+                entity_ids,
+            )
+            cc.add_event(
+                collection,
+                event_id=f"{domain}_{event_id}",
+                summary=evt["description"],
+                metadata={"date": evt["date"], "event_type": evt.get("event_type", "unspecified"), "sqlite_event_id": event_id},
+            )
+            new_events_written += 1
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning("Skipping malformed new_events entry (%s): %r", exc, evt)
+            malformed_skipped += 1
 
     thesis_updates_applied = 0
     thesis_updates_rejected = 0
     for update in analysis_json.get("thesis_updates", []):
-        title = update["title"]
-        status = update.get("status", "active")
-        note = update.get("note", "")
-        if update.get("new_thesis"):
-            supporting = update.get("supporting_events") or []
-            # Distinct-supporting-event bar (spec 3.B) enforced here, not just
-            # trusted from the prompt: reject rather than persist a thesis
-            # promoted off fewer than 2 independent events.
-            if len(set(supporting)) < MIN_SUPPORTING_EVENTS_FOR_NEW_THESIS:
-                logger.warning(
-                    "Rejecting new thesis '%s': only %d distinct supporting event(s) cited "
-                    "(need >= %d) — logging as evidence only, not promoting to a thesis.",
-                    title,
-                    len(set(supporting)),
-                    MIN_SUPPORTING_EVENTS_FOR_NEW_THESIS,
+        try:
+            title = update["title"]
+            status = update.get("status", "active")
+            note = update.get("note", "")
+            if update.get("new_thesis"):
+                supporting = update.get("supporting_events") or []
+                # Distinct-supporting-event bar (spec 3.B) enforced here, not
+                # just trusted from the prompt: reject rather than persist a
+                # thesis promoted off fewer than 2 independent events.
+                if len(set(supporting)) < MIN_SUPPORTING_EVENTS_FOR_NEW_THESIS:
+                    logger.warning(
+                        "Rejecting new thesis '%s': only %d distinct supporting event(s) cited "
+                        "(need >= %d) — logging as evidence only, not promoting to a thesis.",
+                        title,
+                        len(set(supporting)),
+                        MIN_SUPPORTING_EVENTS_FOR_NEW_THESIS,
+                    )
+                    thesis_updates_rejected += 1
+                    continue
+                db.insert_or_update_thesis(
+                    conn, domain, title, update.get("statement", ""), status, run_date, supporting
                 )
-                thesis_updates_rejected += 1
-                continue
-            db.insert_or_update_thesis(
-                conn, domain, title, update.get("statement", ""), status, run_date, supporting
-            )
-            thesis_updates_applied += 1
-        elif "statement" in update:
-            db.insert_or_update_thesis(conn, domain, title, update["statement"], status, run_date)
-            thesis_updates_applied += 1
-        else:
-            db.update_thesis_status(conn, domain, title, status, note, run_date)
-            thesis_updates_applied += 1
+                thesis_updates_applied += 1
+            elif "statement" in update:
+                db.insert_or_update_thesis(conn, domain, title, update["statement"], status, run_date)
+                thesis_updates_applied += 1
+            else:
+                db.update_thesis_status(conn, domain, title, status, note, run_date)
+                thesis_updates_applied += 1
+        except (KeyError, TypeError) as exc:
+            logger.warning("Skipping malformed thesis_updates entry (%s): %r", exc, update)
+            malformed_skipped += 1
 
     new_predictions_written = 0
     for pred in analysis_json.get("new_predictions", []):
-        claim = pred.get("claim")
-        if not claim:
-            continue
-        db.insert_prediction(
-            conn,
-            domain,
-            claim,
-            date_made=run_date,
-            target_date=pred.get("target_date") or None,
-            source_run_date=run_date,
-        )
-        new_predictions_written += 1
+        try:
+            claim = pred.get("claim")
+            if not claim:
+                continue
+            db.insert_prediction(
+                conn,
+                domain,
+                claim,
+                date_made=run_date,
+                target_date=pred.get("target_date") or None,
+                source_run_date=run_date,
+            )
+            new_predictions_written += 1
+        except (KeyError, TypeError) as exc:
+            logger.warning("Skipping malformed new_predictions entry (%s): %r", exc, pred)
+            malformed_skipped += 1
 
     logger.info(
         "Write-back complete: %d new entities, %d relationships, %d events, "
-        "%d thesis updates applied (%d rejected for the 2-event bar), %d new predictions",
-        len(analysis_json.get("new_entities", [])),
-        len(analysis_json.get("new_relationships", [])),
-        len(analysis_json.get("new_events", [])),
+        "%d thesis updates applied (%d rejected for the 2-event bar), %d new predictions"
+        "%s",
+        new_entities_written,
+        new_relationships_written,
+        new_events_written,
         thesis_updates_applied,
         thesis_updates_rejected,
         new_predictions_written,
+        f" ({malformed_skipped} malformed entries skipped — check warnings above)" if malformed_skipped else "",
     )
 
     return {
-        "new_entities": len(analysis_json.get("new_entities", [])),
-        "new_relationships": len(analysis_json.get("new_relationships", [])),
-        "new_events": len(analysis_json.get("new_events", [])),
+        "new_entities": new_entities_written,
+        "new_relationships": new_relationships_written,
+        "new_events": new_events_written,
         "thesis_updates_applied": thesis_updates_applied,
         "thesis_updates_rejected": thesis_updates_rejected,
         "new_predictions": new_predictions_written,
+        "malformed_entries_skipped": malformed_skipped,
     }

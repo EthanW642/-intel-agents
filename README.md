@@ -142,7 +142,7 @@ requiring live network access to those specific services could be run here.
 Hugging Face (for the dedup/Chroma embedding model) and PyPI *were*
 reachable, which is documented per-item below rather than assumed.
 
-**Verified in this environment** (`python -m pytest tests/` — 50 tests,
+**Verified in this environment** (`python -m pytest tests/` — 83 tests,
 all passing; also `python -m py_compile` on every file and a plain import
 of every module):
 - Dedup clustering math (against a fake embedder — the real
@@ -351,6 +351,30 @@ trusting daily use:**
         `tests/test_run.py::test_prediction_resolution_receives_triaged_items_not_deduped`
         and schema-bounds tests in `tests/test_triage.py`/
         `tests/test_predictions.py`.
+     10. **`write_back` had no protection against a malformed entry from
+         Sonnet.** Found via a fresh full-project audit, not a live crash:
+         unlike the Ollama calls (triage, prediction resolution), which now
+         use schema-constrained structured output, Sonnet's JSON write-back
+         block has no schema enforcement at all — it's prompt-following
+         inside a larger prose response, so a missing field on one
+         entity/event/relationship is plausible. `write_back` used direct
+         dict access (`evt["date"]`, `rel["entity_a"]`, etc.) with no
+         per-item error handling, so one bad entry would raise and crash
+         the *entire* write-back — and since write-back runs before
+         `render_briefing`/email in `run.py`, that would mean money already
+         spent on the Sonnet call but no briefing rendered and no email
+         sent that day. Fixed: each per-item loop in `write_back`
+         (`new_entities`, `new_relationships`, `new_events`,
+         `thesis_updates`, `new_predictions`) now catches
+         `KeyError`/`TypeError`/`ValueError` per entry, logs a warning, and
+         continues — one malformed entry no longer costs the rest of the
+         write-back or the render/email steps that follow. The summary dict
+         (and `data/run_log.csv`) gained a `malformed_entries_skipped`
+         count so this is visible if it ever happens, not silent. Also
+         removed genuinely dead code found in the same pass: `api_call_log`
+         (SQLite table + `log_api_call` function) was never called anywhere
+         — cost logging actually happens via `data/api_cost_log.csv`
+         instead. Locked in with 5 new tests in `tests/test_memory_and_db.py`.
 
      **First full clean run confirmed (2026-07-24):** cold-start handling
      ("no established pattern yet," not fabricated continuity), source
@@ -383,3 +407,7 @@ trusting daily use:**
 5. After several weeks (once enough predictions have resolved): check that
    the track-record summary appears in the prompt and that new predictions'
    confidence language visibly responds to it, not just note it.
+6. `scheduler.py` itself — every live run so far has been a manual
+   `python -m agents.middle_east.run`. `BlockingScheduler` actually firing
+   `run_middle_east` on its own cron schedule (`run_hour`/`run_minute` in
+   `config/watchlists.yaml`) has not yet been observed for real.

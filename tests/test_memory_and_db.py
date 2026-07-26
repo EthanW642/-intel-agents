@@ -174,3 +174,87 @@ def test_track_record_present_when_enough_resolved(conn):
     assert summary is not None
     assert "confirmed" in summary
     assert "contradicted" in summary
+
+
+# ---- write_back resilience to malformed entries (no schema enforcement on Sonnet's JSON) ----
+
+
+def test_write_back_skips_malformed_entity_without_crashing(conn):
+    fake_collection = FakeChromaCollection()
+    analysis_json = {
+        "new_entities": [{"type": "person", "notes": "missing the name field"}, {"name": "Valid Entity", "type": "person"}],
+        "new_relationships": [],
+        "new_events": [],
+        "thesis_updates": [],
+        "new_predictions": [],
+    }
+    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01")
+
+    assert summary["new_entities"] == 1  # only the valid one
+    assert summary["malformed_entries_skipped"] == 1
+    row = conn.execute("SELECT * FROM entities WHERE name = ?", ("Valid Entity",)).fetchone()
+    assert row is not None
+
+
+def test_write_back_skips_malformed_relationship_without_crashing(conn):
+    fake_collection = FakeChromaCollection()
+    analysis_json = {
+        "new_entities": [],
+        "new_relationships": [{"entity_a": "A", "description": "missing entity_b and type"}],
+        "new_events": [],
+        "thesis_updates": [],
+        "new_predictions": [],
+    }
+    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01")
+
+    assert summary["new_relationships"] == 0
+    assert summary["malformed_entries_skipped"] == 1
+
+
+def test_write_back_skips_malformed_event_without_crashing(conn):
+    fake_collection = FakeChromaCollection()
+    analysis_json = {
+        "new_entities": [],
+        "new_relationships": [],
+        "new_events": [{"description": "missing the date field"}, {"date": "2026-03-01", "description": "valid event"}],
+        "thesis_updates": [],
+        "new_predictions": [],
+    }
+    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01")
+
+    assert summary["new_events"] == 1  # only the valid one
+    assert summary["malformed_entries_skipped"] == 1
+
+
+def test_write_back_skips_malformed_thesis_update_without_crashing(conn):
+    fake_collection = FakeChromaCollection()
+    analysis_json = {
+        "new_entities": [],
+        "new_relationships": [],
+        "new_events": [],
+        "thesis_updates": [{"status": "reinforced", "note": "missing the title field"}],
+        "new_predictions": [],
+    }
+    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01")
+
+    assert summary["thesis_updates_applied"] == 0
+    assert summary["malformed_entries_skipped"] == 1
+
+
+def test_write_back_one_malformed_entry_does_not_block_the_rest(conn):
+    # The actual point of the fix: a single bad entry must not cost the
+    # whole write-back (and, in the real pipeline, the briefing/email that
+    # follow it) after an already-paid-for Sonnet call.
+    fake_collection = FakeChromaCollection()
+    analysis_json = {
+        "new_entities": [{"notes": "malformed, no name"}],
+        "new_relationships": [],
+        "new_events": [{"date": "2026-03-01", "description": "a real event"}],
+        "thesis_updates": [],
+        "new_predictions": [{"claim": "a real prediction", "target_date": None, "source_note": ""}],
+    }
+    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01")
+
+    assert summary["malformed_entries_skipped"] == 1
+    assert summary["new_events"] == 1
+    assert summary["new_predictions"] == 1

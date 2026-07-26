@@ -68,17 +68,6 @@ CREATE TABLE IF NOT EXISTS predictions (
     created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS api_call_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    domain TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    model TEXT NOT NULL,
-    input_tokens INTEGER NOT NULL,
-    output_tokens INTEGER NOT NULL,
-    thinking_tokens INTEGER NOT NULL DEFAULT 0,
-    estimated_cost_usd REAL NOT NULL
-);
-
 CREATE INDEX IF NOT EXISTS idx_events_domain_date ON events(domain, date);
 CREATE INDEX IF NOT EXISTS idx_relationships_entities ON relationships(entity_a_id, entity_b_id);
 CREATE INDEX IF NOT EXISTS idx_theses_domain_status ON theses(domain, status);

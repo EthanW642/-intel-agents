@@ -1,5 +1,6 @@
 """SQLite structured store (spec section 3.B): entities, events,
-relationships, theses, and the api_call_log used for cost tracking.
+relationships, theses, and predictions. Cost tracking lives in
+data/api_cost_log.csv (pipeline/analyze.py), not this store.
 """
 from __future__ import annotations
 
@@ -265,22 +266,3 @@ def get_recent_resolved_predictions(
         """,
         (domain, limit),
     ).fetchall()
-
-
-def log_api_call(
-    conn: sqlite3.Connection,
-    domain: str,
-    model: str,
-    input_tokens: int,
-    output_tokens: int,
-    thinking_tokens: int,
-    estimated_cost_usd: float,
-) -> None:
-    conn.execute(
-        """
-        INSERT INTO api_call_log (domain, timestamp, model, input_tokens, output_tokens, thinking_tokens, estimated_cost_usd)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (domain, now_iso(), model, input_tokens, output_tokens, thinking_tokens, estimated_cost_usd),
-    )
-    conn.commit()
