@@ -70,8 +70,16 @@ def run() -> Path | None:
 
         logger.info("Stage 2c: prediction resolution check (local, no API cost)")
         pending = [dict(row) for row in db.get_pending_predictions(conn, DOMAIN)]
+        # Deliberately `triaged`, not `deduped` (spec 3.C intent, but also a
+        # real fix: confirmed live 2026-07-25 that dumping all ~393 deduped
+        # items into one prediction-resolution prompt blew Ollama's context
+        # window, silently truncating input and producing confident-looking
+        # verdicts about news the model never actually saw. `triaged` is a
+        # ~6x smaller, already relevance-filtered set — comfortably fits in
+        # context, and a prediction can only be legitimately confirmed/
+        # contradicted by something that already cleared the relevance bar.
         resolutions = resolve_predictions(
-            pending, deduped, ollama_host=pipeline_cfg["ollama_host"], model=pipeline_cfg["triage_model"]
+            pending, triaged, ollama_host=pipeline_cfg["ollama_host"], model=pipeline_cfg["triage_model"]
         )
         for r in resolutions:
             db.resolve_prediction(conn, r["id"], r["verdict"], r["reason"])

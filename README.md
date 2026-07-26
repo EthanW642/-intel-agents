@@ -317,6 +317,40 @@ trusting daily use:**
         test asserting the schema is actually passed to `call_ollama` with
         the right batch size, in `tests/test_triage.py` and
         `tests/test_predictions.py`.
+     9. **Prediction resolution: 14/14 resolved, 0/10 confirmed, 10/10
+        contradicted — from a context window blowout, not bad reasoning.**
+        With triage genuinely working (finding #8), a real run then showed
+        every one of 14 pending predictions resolved (the system prompt
+        explicitly says pending should be the default on most days), and
+        the last 10 were unanimously "contradicted." Querying
+        `resolution_note` directly from SQLite showed why: literally every
+        "contradicted" reason cited a totally unrelated item (a film review
+        at a cultural center, a football signing, mining-sector reforms) —
+        the same handful of unrelated topics recurring across unrelated
+        predictions, the signature of the model working from a tiny,
+        essentially arbitrary leftover slice of input. Root cause:
+        `resolve_predictions` was called with all ~393 **deduped** items
+        (not the 62 already-**triaged** ones), and `_build_items_block` has
+        no length cap — Ollama's default context window (2048-4096 tokens)
+        was blown out and silently truncated, no error. Confirmed via
+        `scripts/debug_prediction_context.py`: a 1-prediction, 351-item test
+        prompt came to ~33,012 estimated tokens; even explicitly setting
+        `num_ctx=16384` wasn't enough, and the model returned a nonsense
+        out-of-range index (17, then 35) for a batch where the only valid
+        index was 0. Fixed three ways: (1) `agents/middle_east/run.py`
+        Stage 2c now passes `triaged`, not `deduped` — a ~6x reduction, and
+        arguably more correct anyway since a prediction can only be
+        legitimately resolved by something that already cleared the
+        relevance bar; (2) `call_ollama` gained an explicit `num_ctx`
+        parameter, and both `pipeline/triage.py` (8192) and
+        `pipeline/predictions.py` (16384) now set it explicitly rather than
+        trusting Ollama's small default; (3) both response schemas now
+        bound `index` (and triage's `score`) to a valid range, so an
+        out-of-range value is rejected at the schema level instead of
+        silently corrupting a result. Locked in with
+        `tests/test_run.py::test_prediction_resolution_receives_triaged_items_not_deduped`
+        and schema-bounds tests in `tests/test_triage.py`/
+        `tests/test_predictions.py`.
 
      **First full clean run confirmed (2026-07-24):** cold-start handling
      ("no established pattern yet," not fabricated continuity), source

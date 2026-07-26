@@ -76,3 +76,54 @@ def test_run_skips_alert_email_gracefully_when_no_gmail_credentials(mocked_run_d
     logged_row = run_module.write_run_log_row.call_args[0][0]
     assert logged_row["ollama_outage"] is True
     assert logged_row["email_sent"] is False
+
+
+def test_prediction_resolution_receives_triaged_items_not_deduped(mocked_run_deps, monkeypatch, tmp_path):
+    # Regression for the real bug (2026-07-25): resolve_predictions used to
+    # get the full ~393-item deduped set, blowing Ollama's context window
+    # and producing confident verdicts about news the model never saw.
+    # triaged (already relevance-filtered, ~6x smaller) is correct here.
+    run_module = mocked_run_deps
+    deduped_items = ["deduped-item-1", "deduped-item-2", "deduped-item-3"]
+    triaged_items = ["triaged-item-1"]
+    monkeypatch.setattr(run_module, "dedup_items", lambda items, **k: deduped_items)
+    monkeypatch.setattr(run_module, "triage_items", MagicMock(return_value=triaged_items))
+    resolve_predictions_mock = MagicMock(return_value=[])
+    monkeypatch.setattr(run_module, "resolve_predictions", resolve_predictions_mock)
+    monkeypatch.setattr(run_module, "query_memory", lambda *a, **k: {})
+    monkeypatch.setattr(
+        run_module,
+        "run_analysis",
+        lambda *a, **k: {
+            "effort": "low",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+            "cost_usd": 0.0,
+            "write_back": {},
+            "markdown": "# Briefing",
+        },
+    )
+    monkeypatch.setattr(
+        run_module,
+        "write_back",
+        lambda *a, **k: {
+            "new_entities": 0,
+            "new_relationships": 0,
+            "new_events": 0,
+            "thesis_updates_applied": 0,
+            "thesis_updates_rejected": 0,
+            "new_predictions": 0,
+        },
+    )
+    briefing_path = tmp_path / "briefing.md"
+    briefing_path.write_text("# Briefing")
+    monkeypatch.setattr(run_module, "render_briefing", lambda *a, **k: briefing_path)
+    monkeypatch.delenv("GMAIL_ADDRESS", raising=False)
+    monkeypatch.delenv("GMAIL_APP_PASSWORD", raising=False)
+
+    result = run_module.run()
+
+    assert result == briefing_path
+    resolve_predictions_mock.assert_called_once()
+    passed_items = resolve_predictions_mock.call_args[0][1]
+    assert passed_items == triaged_items
+    assert passed_items != deduped_items

@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 
 TRIAGE_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "triage_system.md"
 BATCH_SIZE = 20
+# Ollama's default context window (2048-4096 tokens depending on version) is
+# silently applied if not overridden — no error, just quiet truncation. 20
+# items/batch at ~600-char excerpts fits comfortably here with headroom;
+# explicit rather than relying on whatever the server's default happens to
+# be. See pipeline/predictions.py for the run this actually broke.
+NUM_CTX = 8192
 
 
 class TriageError(Exception):
@@ -41,7 +47,10 @@ def _build_context_block(entities: list, theses: list) -> str:
 def _triage_response_schema(batch_len: int) -> dict:
     """A JSON Schema pinning the response to exactly one {index, score,
     reason} object per input item — see call_ollama's docstring for why a
-    schema, not just "format": "json", is required to actually get this."""
+    schema, not just "format": "json", is required to actually get this.
+    `index`/`score` bounds catch out-of-range nonsense the model can still
+    emit even with a schema (confirmed live 2026-07-25 in the sibling
+    prediction-resolution path: a 1-prediction batch returned index 17)."""
     return {
         "type": "array",
         "minItems": batch_len,
@@ -49,8 +58,8 @@ def _triage_response_schema(batch_len: int) -> dict:
         "items": {
             "type": "object",
             "properties": {
-                "index": {"type": "integer"},
-                "score": {"type": "integer"},
+                "index": {"type": "integer", "minimum": 0, "maximum": max(batch_len - 1, 0)},
+                "score": {"type": "integer", "minimum": 0, "maximum": 10},
                 "reason": {"type": "string"},
             },
             "required": ["index", "score", "reason"],
@@ -124,6 +133,7 @@ def triage_items(
                 system_prompt,
                 user_prompt,
                 response_format=_triage_response_schema(len(batch)),
+                num_ctx=NUM_CTX,
             )
         except httpx.HTTPError:
             logger.exception(

@@ -5,14 +5,19 @@ reforms...) as justification — the signature of a truncated context window,
 not bad reasoning. Ollama silently truncates prompts that exceed its
 default num_ctx (2048-4096 tokens) rather than erroring, so a large items
 block (predictions.py was dumping all ~393 deduped items into one prompt)
-can leave the model unable to see the one item that actually matters.
+could leave the model unable to see the one item that actually matters.
 
-This builds a large synthetic items list with ONE genuinely relevant item
-buried near the end, and calls Ollama twice: once with no context override
-(today's actual behavior) and once with an explicit large num_ctx. If the
-theory is right, the first call should fail to find/cite the relevant item
-(defaulting to "pending" or citing an unrelated filler item) and the second
-should correctly find and confirm it.
+The first fix attempt (raising num_ctx to 16384 while still passing all
+~350+ items) did NOT work — the prompt was ~33,012 estimated tokens,
+still bigger than 16384, and the model returned a nonsense out-of-range
+index both times. The real fix has two parts: (1) run.py now passes
+`resolve_predictions` the already-triaged item set (~62 items, not ~393),
+a ~6x reduction, and (2) predictions.py now sets an explicit num_ctx
+(16384) as a floor regardless. This script mirrors both: it builds a
+REALISTIC-sized items list (matching the post-fix triaged-item scale, not
+the original 350-filler-item stress test) and calls Ollama the way
+predictions.py actually does now, to sanity-check before spending on a
+real run.
 """
 from __future__ import annotations
 
@@ -24,11 +29,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import yaml
 
 from pipeline.ollama_client import call_ollama
-from pipeline.predictions import _build_items_block, _build_predictions_block, _load_system_prompt, _resolution_response_schema
+from pipeline.predictions import NUM_CTX, _build_items_block, _build_predictions_block, _load_system_prompt, _resolution_response_schema
 from agents.middle_east.sources import RawItem
 
 WATCHLIST_PATH = Path(__file__).parent.parent / "config" / "watchlists.yaml"
-NUM_FILLER_ITEMS = 350
+NUM_FILLER_ITEMS = 60  # realistic post-fix scale: ~62 triaged items, not the full ~393 deduped set
 
 
 def _filler_item(i: int) -> RawItem:
@@ -72,26 +77,23 @@ def main() -> None:
 
     print(f"=== Prompt size: {len(user_prompt)} chars (~{len(user_prompt)//4} tokens estimated) ===\n", file=sys.stderr)
 
-    print("=== Call 1: NO num_ctx override (today's actual behavior) ===", file=sys.stderr)
-    raw_default = call_ollama(
+    print(f"=== Call: num_ctx={NUM_CTX} (matches predictions.py's actual fixed behavior) ===", file=sys.stderr)
+    raw = call_ollama(
         pipeline_cfg["ollama_host"],
         pipeline_cfg["triage_model"],
         system_prompt,
         user_prompt,
         response_format=_resolution_response_schema(len(predictions)),
+        num_ctx=NUM_CTX,
     )
-    print(raw_default)
-
-    print("\n=== Call 2: num_ctx=16384 (explicit large context) ===", file=sys.stderr)
-    raw_large_ctx = call_ollama(
-        pipeline_cfg["ollama_host"],
-        pipeline_cfg["triage_model"],
-        system_prompt,
-        user_prompt,
-        response_format=_resolution_response_schema(len(predictions)),
-        num_ctx=16384,
+    print(raw)
+    print(
+        "\nExpected: index 0, verdict 'confirmed', reason citing the IRGC Quds Force item. "
+        "Anything else (wrong index, 'contradicted', or a reason citing an unrelated filler "
+        "item) means the fix isn't sufficient yet — paste this output back before running the "
+        "full pipeline.",
+        file=sys.stderr,
     )
-    print(raw_large_ctx)
 
 
 if __name__ == "__main__":

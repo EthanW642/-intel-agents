@@ -102,6 +102,19 @@ def test_triage_response_schema_pins_array_length_to_batch_size():
     assert schema["items"]["required"] == ["index", "score", "reason"]
 
 
+def test_triage_response_schema_bounds_index_and_score():
+    # Regression: the sibling prediction-resolution schema let the model
+    # return an out-of-range index (17) for a 1-item batch — confirmed live
+    # 2026-07-25. Bounding index/score in the schema is cheap insurance.
+    schema = _triage_response_schema(5)
+    index_prop = schema["items"]["properties"]["index"]
+    score_prop = schema["items"]["properties"]["score"]
+    assert index_prop["minimum"] == 0
+    assert index_prop["maximum"] == 4
+    assert score_prop["minimum"] == 0
+    assert score_prop["maximum"] == 10
+
+
 def test_triage_passes_schema_constrained_format_to_ollama():
     # Regression for the real bug (2026-07-25): bare "format": "json" let
     # qwen2.5:14b return a single object instead of a per-item array,

@@ -2,9 +2,15 @@
 
 Runs locally via the same Ollama model as triage, before Call 2 — this is
 explicitly NOT a new Anthropic API call. Compares each still-open
-prediction against today's deduped raw items and flags confirmed/
-contradicted outcomes so Call 2's track-record summary (pipeline/memory.py
-::build_track_record_summary) reflects reality.
+prediction against today's already-triaged (relevance-filtered) items and
+flags confirmed/contradicted outcomes so Call 2's track-record summary
+(pipeline/memory.py::build_track_record_summary) reflects reality.
+
+Deliberately called with the *triaged* set, not the full deduped set — see
+agents/middle_east/run.py's Stage 2c comment: passing all ~393 deduped
+items here (confirmed live 2026-07-25) blew Ollama's context window,
+silently truncating input and producing confident-looking verdicts about
+news the model never actually saw.
 """
 from __future__ import annotations
 
@@ -20,6 +26,10 @@ logger = logging.getLogger(__name__)
 
 RESOLUTION_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "prediction_resolution_system.md"
 BATCH_SIZE = 20
+# See pipeline/triage.py's NUM_CTX comment. Sized generously (vs. triage's
+# 8192) because the full items block is repeated in every predictions-batch
+# call here, and the triaged set can run larger on heavy news days.
+NUM_CTX = 16384
 
 
 def _load_system_prompt() -> str:
@@ -30,7 +40,11 @@ def _resolution_response_schema(batch_len: int) -> dict:
     """A JSON Schema pinning the response to exactly one {index, verdict,
     reason} object per pending prediction in the batch — see
     pipeline/ollama_client.py::call_ollama's docstring for why this, rather
-    than bare "format": "json", is required."""
+    than bare "format": "json", is required. `index` bounds catch
+    out-of-range nonsense the model can still emit even with a schema
+    (confirmed live 2026-07-25: a 1-prediction batch returned index 17,
+    then index 35 on a retry — almost certainly a context-truncation
+    symptom, but bounding this is cheap insurance regardless)."""
     return {
         "type": "array",
         "minItems": batch_len,
@@ -38,7 +52,7 @@ def _resolution_response_schema(batch_len: int) -> dict:
         "items": {
             "type": "object",
             "properties": {
-                "index": {"type": "integer"},
+                "index": {"type": "integer", "minimum": 0, "maximum": max(batch_len - 1, 0)},
                 "verdict": {"type": "string", "enum": ["confirmed", "contradicted", "pending"]},
                 "reason": {"type": "string"},
             },
@@ -119,6 +133,7 @@ def resolve_predictions(
                 system_prompt,
                 user_prompt,
                 response_format=_resolution_response_schema(len(batch)),
+                num_ctx=NUM_CTX,
             )
         except httpx.HTTPError:
             logger.exception(
