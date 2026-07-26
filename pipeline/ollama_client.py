@@ -30,6 +30,7 @@ def call_ollama(
     user_prompt: str,
     timeout: float = 180.0,
     response_format: str | dict = "json",
+    num_ctx: int | None = None,
 ) -> str:
     """`response_format` defaults to the bare `"json"` mode (valid JSON, any
     shape) but callers doing batch scoring should pass a JSON Schema dict
@@ -41,17 +42,29 @@ def call_ollama(
     mechanism for enforcing "one entry per input item," not a prompt
     instruction the model can choose to ignore.
     """
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "format": response_format,
+        "stream": False,
+    }
+    if num_ctx is not None:
+        # Ollama's default context window (2048-4096 tokens depending on
+        # version) is silently applied if not overridden here — a large
+        # prompt just gets truncated server-side with no error, no warning.
+        # Confirmed live 2026-07-25: dumping ~393 items into one prediction-
+        # resolution prompt with no num_ctx override caused the model to
+        # "see" only a tiny leftover slice of the real input, producing
+        # confident-sounding verdicts about news that was never actually in
+        # its context.
+        payload["options"] = {"num_ctx": num_ctx}
+
     resp = httpx.post(
         f"{host}/api/chat",
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "format": response_format,
-            "stream": False,
-        },
+        json=payload,
         timeout=timeout,
     )
     resp.raise_for_status()
