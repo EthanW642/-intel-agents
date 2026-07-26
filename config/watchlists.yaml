@@ -27,14 +27,18 @@ pipeline:
   # Was 16000 — too low. Confirmed live 2026-07-24: a real "max"-effort
   # call on 68 items hit the 16000-token cap during thinking, got cut off
   # before it reached the required closing JSON write-back block, and the
-  # $0.20 call wrote back zero entities/events/theses/predictions. At
-  # xhigh/max effort, thinking alone can consume most of a small budget
-  # before any output text is written. Raised to 64000, matching the
-  # documented minimum for xhigh/max effort — this doesn't force every
-  # call to use 64000 tokens (adaptive thinking only uses what a given
-  # day's load actually needs), it just removes the truncation risk on
-  # the heavy days where effort escalates.
-  analysis_max_tokens: 64000
+  # $0.20 call wrote back zero entities/events/theses/predictions. Raised
+  # to 64000 — still too low. Confirmed live 2026-07-25: a real "max"-
+  # effort call on 73 triaged items (a genuinely heavy day, correctly
+  # escalated per the thresholds below) hit the 64000-token cap again —
+  # output_tokens landed at exactly 64000, no JSON block found, $0.68
+  # wrote back nothing. Raised to 128000, Sonnet 5's actual documented
+  # output ceiling (streaming, which analyze.py already uses) — this
+  # doesn't force every call to use 128000 tokens (adaptive thinking only
+  # uses what a given day's load actually needs, and max_tokens is just a
+  # ceiling, not a spend target), it removes the truncation risk entirely
+  # rather than guessing at another still-possibly-too-low number.
+  analysis_max_tokens: 128000
 
   # Thinking depth for Stage 4 (spec 5's "scaled thinking budget, not
   # flat"). NOTE: the spec's original design was a token budget

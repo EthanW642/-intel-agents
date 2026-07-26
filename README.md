@@ -375,6 +375,28 @@ trusting daily use:**
          (SQLite table + `log_api_call` function) was never called anywhere
          — cost logging actually happens via `data/api_cost_log.csv`
          instead. Locked in with 5 new tests in `tests/test_memory_and_db.py`.
+     11. **`analysis_max_tokens: 64000` truncated again — a second time,
+         at a higher bar.** With triage genuinely working (finding #8) and
+         a real heavy day (73 items survived triage — a correct `max`-
+         effort escalation, not a bug), the Sonnet call hit
+         `output_tokens=64000` exactly, logged `No JSON write-back block
+         found in analysis output`, wrote back nothing, and cost $0.6818 —
+         the single most expensive failed call of the whole project.
+         `max_tokens` caps thinking + response text *combined*, and at
+         `effort=max` on a heavy day, thinking alone can consume the
+         entire budget before the model reaches the closing JSON block.
+         64000 was itself a prior fix (see #3 above) for the same failure
+         mode at a lower bar (68 items, `analysis_max_tokens: 16000` at
+         the time) — it wasn't wrong then, it just wasn't the actual
+         ceiling. Rather than guess a third intermediate number, checked
+         Sonnet 5's documented output limit directly: **128000 tokens**,
+         supported with streaming (which `pipeline/analyze.py` already
+         uses via `client.messages.stream(...)`). Raised
+         `analysis_max_tokens` to 128000 — the real ceiling, not another
+         guess. `max_tokens` is a cap, not a spend target: this doesn't
+         make ordinary days cost more, it just removes the truncation
+         risk on genuinely heavy ones instead of pushing the same failure
+         to a higher item count.
 
      **First full clean run confirmed (2026-07-24):** cold-start handling
      ("no established pattern yet," not fabricated continuity), source
