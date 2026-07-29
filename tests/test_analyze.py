@@ -5,8 +5,6 @@ CFG = {
     "effort_medium_max_load": 16,
     "xhigh_min_triaged_items": 20,
     "xhigh_min_active_theses": 1,
-    "max_min_triaged_items": 35,
-    "max_min_active_theses": 2,
 }
 
 
@@ -32,7 +30,6 @@ def test_effort_does_not_escalate_on_theses_alone():
     result = compute_effort(triaged_item_count=5, active_theses_count=5, pipeline_cfg=CFG)
     assert result in ("low", "medium", "high")
     assert result != "xhigh"
-    assert result != "max"
 
 
 def test_effort_escalates_to_xhigh_when_both_gates_met():
@@ -44,8 +41,16 @@ def test_effort_does_not_escalate_to_xhigh_with_only_one_gate():
     assert compute_effort(triaged_item_count=5, active_theses_count=1, pipeline_cfg=CFG) != "xhigh"
 
 
-def test_effort_escalates_to_max_when_both_gates_met():
-    assert compute_effort(triaged_item_count=35, active_theses_count=2, pipeline_cfg=CFG) == "max"
+def test_effort_never_reaches_max():
+    # Regression for the real bug (2026-07-26): once a maturing memory
+    # store accumulates enough real active/reinforced theses (an expected
+    # outcome for a domain watching a persistently active conflict, not
+    # an anomaly), an active-theses-count gate meant to reserve "max" for
+    # genuinely rare heavy days instead stays permanently cleared, making
+    # "max" the routine outcome. "max" is no longer reachable at all --
+    # xhigh is the ceiling regardless of how extreme the inputs are.
+    result = compute_effort(triaged_item_count=10_000, active_theses_count=10_000, pipeline_cfg=CFG)
+    assert result == "xhigh"
 
 
 def test_current_rates_before_cutoff():

@@ -49,15 +49,23 @@ def compute_effort(triaged_item_count: int, active_theses_count: int, pipeline_c
     rejects `thinking.budget_tokens` outright).
 
     Deliberately conservative: "high" is a CAP reached by item/thesis load
-    alone; escalating past it to "xhigh"/"max" additionally requires a real
+    alone; escalating past it to "xhigh" additionally requires a real
     item-volume signal AND at least one currently-active thesis in play,
     so "high" doesn't become the silent default on an ordinary day.
+
+    "max" is deliberately never auto-selected here — confirmed live
+    2026-07-26 that `active_theses_count` isn't a reliable "genuinely rare
+    heavy day" signal the way it looks on paper: once enough real theses
+    accumulate (an expected, not anomalous, outcome of a maturing memory
+    store watching a persistently active region), an active-theses
+    threshold that was meant to gate a rare tier instead stays permanently
+    cleared, and "max" silently becomes the routine outcome — exactly the
+    "high becomes the silent default" failure this function was designed
+    to prevent, just one tier up. `xhigh` is the documented top
+    recommended tier for agentic/reasoning work on Sonnet 5 already, so
+    this function now caps there; there is currently no path to "max" in
+    this pipeline at all.
     """
-    if (
-        triaged_item_count >= pipeline_cfg["max_min_triaged_items"]
-        and active_theses_count >= pipeline_cfg["max_min_active_theses"]
-    ):
-        return "max"
     if (
         triaged_item_count >= pipeline_cfg["xhigh_min_triaged_items"]
         and active_theses_count >= pipeline_cfg["xhigh_min_active_theses"]

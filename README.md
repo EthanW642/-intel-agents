@@ -111,13 +111,20 @@ effort tiers instead of a token count.
 
 This is deliberately conservative: `effort` is capped at `"high"` for
 ordinary days purely by item/thesis-count load. Escalating past `"high"` to
-`"xhigh"` or `"max"` additionally requires a real item-volume signal *and*
-at least one currently-active thesis in play this run (thresholds in
-`watchlists.yaml`: `xhigh_min_triaged_items`/`xhigh_min_active_theses`,
-`max_min_triaged_items`/`max_min_active_theses`) — so a day with a lot of
-low-signal volume but no theses in play doesn't silently burn `xhigh`
-tokens, and `"high"` doesn't become the silent default the way a single
-large token cap effectively would.
+`"xhigh"` additionally requires a real item-volume signal *and* at least
+one currently-active thesis in play this run (thresholds in
+`watchlists.yaml`: `xhigh_min_triaged_items`/`xhigh_min_active_theses`) —
+so a day with a lot of low-signal volume but no theses in play doesn't
+silently burn `xhigh` tokens, and `"high"` doesn't become the silent
+default the way a single large token cap effectively would. `compute_effort`
+never returns `"max"` — confirmed live 2026-07-26 that an active-theses-
+count gate meant to reserve `"max"` for genuinely rare heavy days instead
+becomes permanently satisfied once a maturing memory store accumulates a
+handful of real, non-dormant theses (an expected outcome, not an anomaly,
+for a domain watching a persistently active conflict), making `"max"` the
+routine outcome instead of a rare one. `"xhigh"` is Sonnet 5's own
+documented top recommended tier for agentic/reasoning work, so the
+pipeline caps there — see finding #12 in the live-run findings log below.
 
 ## Cost tracking
 
@@ -397,6 +404,34 @@ trusting daily use:**
          make ordinary days cost more, it just removes the truncation
          risk on genuinely heavy ones instead of pushing the same failure
          to a higher item count.
+     12. **`effort=max` had quietly become the routine daily outcome, not
+         a rare escalation.** With the 128000-token fix confirmed working
+         (finding #11 — no truncation, full write-back), the next 3
+         consecutive real runs still all hit `effort=max`, at climbing
+         cost: $0.36 → $0.68 → $1.01. The `active_theses >= 4` gate meant
+         to reserve `max` for genuinely rare heavy days had, by
+         2026-07-26, been permanently satisfied — a real query against
+         the live database confirmed exactly 4 theses sitting at
+         `reinforced` status (Khamenei succession, escalation/
+         de-escalation signaling, regional widening, and a newly-formed
+         West Bank thesis), none anywhere near the 14-day dormancy
+         window. That's not an anomaly; it's the expected, healthy
+         outcome of a memory store maturing while watching a genuinely
+         multi-front active conflict — but it meant the thesis-count gate
+         could never again *un*-clear, leaving only the item-count gate
+         doing any real work, which real triage volume cleared on 3
+         consecutive days. This is the exact "high becomes the silent
+         default" failure `compute_effort` was designed to prevent —
+         just one tier up, and now permanent rather than occasional.
+         Fixed: removed the `max` effort tier from `compute_effort`
+         entirely (and the now-dead `max_min_triaged_items`/
+         `max_min_active_theses` config keys) — `xhigh` is Sonnet 5's own
+         documented top recommended tier for agentic/reasoning work, so
+         the pipeline now caps there, with no code path to `max` at all
+         rather than a threshold that could quietly re-permanentize
+         itself again as the memory store keeps growing. Locked in with
+         `tests/test_analyze.py::test_effort_never_reaches_max` (asserts
+         the cap holds even at absurdly extreme inputs).
 
      **First full clean run confirmed (2026-07-24):** cold-start handling
      ("no established pattern yet," not fabricated continuity), source
