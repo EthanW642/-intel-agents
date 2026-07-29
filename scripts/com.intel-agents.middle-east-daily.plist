@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Boot/login trigger for the Middle East intel pipeline, for a Mac that's
+  fully shut down overnight (so there's no fixed-clock-time schedule that
+  can reliably fire — see README's "Running when the Mac is off overnight"
+  section). Fires once at login (RunAtLoad), and again every hour after
+  that as a retry in case the first attempt happens before Ollama/network
+  are ready — scripts/run_if_not_already_today.py makes repeated firings a
+  cheap no-op once the day's run has actually succeeded.
+
+  EDIT THE PATHS BELOW if your checkout or venv location differs from
+  /Users/ethanwallace/Projects/-intel-agents.
+
+  Install:
+    cp scripts/com.intel-agents.middle-east-daily.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.intel-agents.middle-east-daily.plist
+
+  Verify it's loaded:
+    launchctl list | grep intel-agents
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.intel-agents.middle-east-daily.plist
+    rm ~/Library/LaunchAgents/com.intel-agents.middle-east-daily.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.intel-agents.middle-east-daily</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ethanwallace/Projects/-intel-agents/venv/bin/python3</string>
+        <string>-m</string>
+        <string>scripts.run_if_not_already_today</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/ethanwallace/Projects/-intel-agents</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StartInterval</key>
+    <integer>3600</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/ethanwallace/Projects/-intel-agents/data/launchagent.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/ethanwallace/Projects/-intel-agents/data/launchagent.log</string>
+</dict>
+</plist>

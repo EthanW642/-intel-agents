@@ -65,6 +65,45 @@ To run on the daily schedule instead of once (default 5:30am local, per spec):
 python scheduler.py
 ```
 
+**This requires the Mac to stay powered on continuously** (`scheduler.py`
+just blocks the terminal and fires at 5:30am — a fully shut-down machine
+can't run it, and can't be woken by it either). If your Mac is fully
+shut down overnight rather than left on, use the boot/login trigger
+instead — see below.
+
+### Running when the Mac is off overnight
+
+A fully powered-off Mac cannot be woken on a schedule by software — there's
+no way around this on a laptop (macOS's `pmset schedule wakeorpoweron` claims
+to, but is unreliable on modern Macs, especially Apple Silicon, and a
+silently-skipped morning is worse than an honestly-late one). Confirmed live
+2026-07-29: given that hard constraint, the practical alternative is running
+once per boot/login instead of at a fixed clock time —
+`scripts/run_if_not_already_today.py` checks `data/run_log.csv` for a row
+dated today and skips if the pipeline already ran, so logging in more than
+once a day doesn't produce duplicate runs or duplicate emails.
+
+Install as a macOS LaunchAgent (fires at login, and retries hourly after
+that in case the first attempt lands before Ollama/network are ready —
+harmless no-ops once the day's run has actually succeeded):
+
+```bash
+cp scripts/com.intel-agents.middle-east-daily.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.intel-agents.middle-east-daily.plist
+```
+
+Check it's loaded: `launchctl list | grep intel-agents`. Uninstall with
+`launchctl unload ~/Library/LaunchAgents/com.intel-agents.middle-east-daily.plist`
+then delete the copied plist. **Edit the paths inside the plist first** if
+your checkout or venv isn't at `/Users/ethanwallace/Projects/-intel-agents`.
+
+The real trade-off versus `scheduler.py`: you get the briefing shortly
+after you next turn the Mac on and log in, not guaranteed at 5:30am — if
+you don't boot it until 9am, that's when it runs. There's no way to get
+genuine fixed-time delivery without something that's never fully off
+(a cloud VM, a Raspberry Pi, etc.) running the pipeline instead of this
+laptop — a materially bigger change than a scheduler tweak.
+
 ## Configuration
 
 - `config/watchlists.yaml` — triage threshold, memory retrieval count,
@@ -464,7 +503,12 @@ trusting daily use:**
 5. After several weeks (once enough predictions have resolved): check that
    the track-record summary appears in the prompt and that new predictions'
    confidence language visibly responds to it, not just note it.
-6. `scheduler.py` itself — every live run so far has been a manual
-   `python -m agents.middle_east.run`. `BlockingScheduler` actually firing
-   `run_middle_east` on its own cron schedule (`run_hour`/`run_minute` in
-   `config/watchlists.yaml`) has not yet been observed for real.
+6. Neither unattended-triggering path has been observed firing on its own
+   yet — every live run so far has been a manual `python -m
+   agents.middle_east.run`. That covers both `scheduler.py`'s
+   `BlockingScheduler` (fires `run_middle_east` on its own cron schedule)
+   and the LaunchAgent + `scripts/run_if_not_already_today.py` boot/login
+   path (see "Running when the Mac is off overnight" above) — confirm the
+   LaunchAgent actually fires after a real reboot/login, that
+   `already_ran_today()` correctly skips a second login the same day, and
+   that `data/launchagent.log` shows what you expect.
