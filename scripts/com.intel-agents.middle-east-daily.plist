@@ -10,6 +10,16 @@
   are ready — scripts/run_if_not_already_today.py makes repeated firings a
   cheap no-op once the day's run has actually succeeded.
 
+  Wrapped in `caffeinate -i`: confirmed live 2026-07-30 that without it, a
+  run fired by RunAtLoad with nobody at the keyboard gets frozen mid-run
+  by the Mac's own idle sleep (observed: `pmset -g` showed a 1-minute idle
+  sleep timeout with no active power assertion overnight — the process
+  sat alive-but-frozen for 10+ hours, having burned only ~10 seconds of
+  real CPU time). `caffeinate -i <command>` holds off idle sleep only
+  while <command> is running, and releases it automatically the moment
+  the pipeline finishes — so the Mac still sleeps normally the rest of
+  the day.
+
   EDIT THE PATHS BELOW if your checkout or venv location differs from
   /Users/ethanwallace/Projects/-intel-agents.
 
@@ -31,6 +41,8 @@
 
     <key>ProgramArguments</key>
     <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-i</string>
         <string>/Users/ethanwallace/Projects/-intel-agents/venv/bin/python3</string>
         <string>-m</string>
         <string>scripts.run_if_not_already_today</string>

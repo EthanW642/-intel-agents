@@ -97,6 +97,17 @@ Check it's loaded: `launchctl list | grep intel-agents`. Uninstall with
 then delete the copied plist. **Edit the paths inside the plist first** if
 your checkout or venv isn't at `/Users/ethanwallace/Projects/-intel-agents`.
 
+**Wrapped in `caffeinate -i`.** Confirmed live 2026-07-30: without it, the
+LaunchAgent *did* fire correctly on a real cold boot/login — but with
+nobody at the keyboard, the Mac's own idle sleep froze the whole process
+mid-run about a minute in (`pmset -g` showed a 1-minute idle sleep
+timeout; the stuck process had accumulated only ~10 seconds of real CPU
+time after 10+ hours). `caffeinate -i <command>` holds off idle sleep
+only while `<command>` runs, and releases it automatically once the
+pipeline finishes, so the Mac still sleeps normally the rest of the day.
+If you customize the plist's `ProgramArguments`, keep `caffeinate -i` as
+the first two entries.
+
 The real trade-off versus `scheduler.py`: you get the briefing shortly
 after you next turn the Mac on and log in, not guaranteed at 5:30am — if
 you don't boot it until 9am, that's when it runs. There's no way to get
@@ -503,12 +514,15 @@ trusting daily use:**
 5. After several weeks (once enough predictions have resolved): check that
    the track-record summary appears in the prompt and that new predictions'
    confidence language visibly responds to it, not just note it.
-6. Neither unattended-triggering path has been observed firing on its own
-   yet — every live run so far has been a manual `python -m
-   agents.middle_east.run`. That covers both `scheduler.py`'s
-   `BlockingScheduler` (fires `run_middle_east` on its own cron schedule)
-   and the LaunchAgent + `scripts/run_if_not_already_today.py` boot/login
-   path (see "Running when the Mac is off overnight" above) — confirm the
-   LaunchAgent actually fires after a real reboot/login, that
-   `already_ran_today()` correctly skips a second login the same day, and
-   that `data/launchagent.log` shows what you expect.
+6. `scheduler.py`'s `BlockingScheduler` has never been observed firing on
+   its own cron schedule — every live run so far has been a manual
+   `python -m agents.middle_east.run`.
+7. The LaunchAgent boot/login path (see "Running when the Mac is off
+   overnight" above) **has** now fired for real on a cold boot/login —
+   but the first attempt (2026-07-30, before the `caffeinate -i` fix)
+   froze mid-run when the Mac's own idle sleep kicked in with nobody at
+   the keyboard, and never reached the `finally` block that writes a
+   `run_log.csv` row. Confirm on a real overnight test that the
+   `caffeinate`-wrapped version now runs to completion unattended, and
+   that `already_ran_today()` correctly skips a second login the same
+   day.
