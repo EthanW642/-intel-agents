@@ -140,9 +140,9 @@ stated-vs-revealed-behavior divergence check actually checkable.
 East, France 24 — Middle East, NPR — Middle East, all Tier 2) to balance
 the two Tier 3 aligned/interpretive sources already in the file (Times of
 Israel, Tehran Times) with outlets that aren't a party to the conflict
-themselves. None of these three have been live-verified from this build
-environment yet — run `scripts/verify_sources.py` on your Mac before
-trusting them, same as every other source in this file.
+themselves. **Verified live 2026-07-31** via `scripts/verify_sources.py`
+on real network access: all three resolved (BBC 30 entries, France 24 30
+entries, NPR 10 entries, all same-day).
 
 **LiveUAMap is currently disabled** (`liveuamap.enabled: false` in
 `sources.yaml`) — confirmed live (2026-07-23) that its free `/rss` route
@@ -254,15 +254,15 @@ of every module):
 trusting daily use:**
 
 1. `python scripts/verify_sources.py` — confirm GDELT and all RSS feeds
-   actually resolve and return current items from your network.
-   **Done and passing as of 2026-07-23** for the original 3 RSS feeds:
-   GDELT + Times of Israel + Al Jazeera + Tehran Times all OK; LiveUAMap
+   actually resolve and return current items from your network. **Done and
+   passing as of 2026-07-31**, all 7 checked sources OK: GDELT, Times of
+   Israel, Al Jazeera, Tehran Times (verified 2026-07-23), plus BBC News —
+   Middle East, France 24 — Middle East, and NPR — Middle East (verified
+   2026-07-31, added the same day since their URLs came from a web search
+   rather than a live fetch from this build environment). LiveUAMap
    confirmed dead (redirects to a paid-API promo page) and is now disabled
-   in `sources.yaml` — see the Configuration section above. **Not yet
-   verified**: the 3 international sources added 2026-07-31 (BBC, France
-   24, NPR) — their URLs were found via web search, not a live fetch from
-   this build environment, so re-run this script after pulling that change
-   and before trusting them. Re-run after any source config change.
+   in `sources.yaml` — see the Configuration section above. Re-run after
+   any source config change.
 2. A real end-to-end run: `ollama serve` (with `qwen2.5:14b` pulled) running
    in the background, then `python -m agents.middle_east.run` with a real
    `ANTHROPIC_API_KEY` in `.env`. Check that:
