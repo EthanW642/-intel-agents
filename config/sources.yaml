@@ -162,10 +162,10 @@ rss_feeds:
     tier: 2  # wire/agency — UK public broadcaster, ME-specific section, not a party to the conflict
     note: "Verified live 2026-07-31: 30 entries, newest same-day."
   - name: "The Guardian — Middle East"
-    url: "https://www.theguardian.com/world/middle-east/rss"
+    url: "https://www.theguardian.com/world/middleeast/rss"
     poll_interval_minutes: 60
     tier: 2  # wire/agency — independently owned (Scott Trust, not government-funded), ME-specific section
-    note: "Swapped in for France 24 2026-07-31 per explicit preference for a source closer to Reuters/AP than a state-funded broadcaster — independent ownership was the deciding factor. Not yet live-verified from a real network — confirm with scripts/verify_sources.py before trusting it (URL uses the Guardian's standard long-standing <section>/rss convention but hasn't been fetched live for this repo)."
+    note: "Swapped in for France 24 2026-07-31 per explicit preference for a source closer to Reuters/AP than a state-funded broadcaster — independent ownership was the deciding factor. First guess at this URL (.../middle-east/rss, hyphenated) 404'd on a live verify_sources.py run — the Guardian's tag slugs generally don't use hyphens (e.g. world/middleeast, unlike their hyphenated article URLs), so this is the corrected guess, STILL UNCONFIRMED. Re-run scripts/verify_sources.py after pulling and report back if this also 404s."
   - name: "NPR — Middle East"
     url: "https://feeds.npr.org/1009/rss.xml"
     poll_interval_minutes: 60

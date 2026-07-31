@@ -268,13 +268,17 @@ trusting daily use:**
    actually resolve and return current items from your network. **Done and
    passing as of 2026-07-31** for 6 of the 7 current sources: GDELT, Times
    of Israel, Al Jazeera, Tehran Times (verified 2026-07-23), plus BBC News
-   — Middle East and NPR — Middle East (verified 2026-07-31). **Not yet
+   — Middle East and NPR — Middle East (verified 2026-07-31). **Still not
    verified**: The Guardian — Middle East, swapped in for France 24 the
-   same day — its URL came from a web search, not a live fetch from this
-   build environment, so re-run this script after pulling that change and
-   before trusting it. LiveUAMap confirmed dead (redirects to a paid-API
-   promo page) and is now disabled in `sources.yaml` — see the
-   Configuration section above. Re-run after any source config change.
+   same day. First attempt (`.../world/middle-east/rss`, hyphenated) 404'd
+   on a real `scripts/verify_sources.py` run; corrected to
+   `.../world/middleeast/rss` (the Guardian's tag slugs generally aren't
+   hyphenated) but this is still an unconfirmed guess, not a verified URL
+   — re-run the script after pulling and see the live-run findings log
+   below if it needs another correction. LiveUAMap confirmed dead
+   (redirects to a paid-API promo page) and is now disabled in
+   `sources.yaml` — see the Configuration section above. Re-run after any
+   source config change.
 2. A real end-to-end run: `ollama serve` (with `qwen2.5:14b` pulled) running
    in the background, then `python -m agents.middle_east.run` with a real
    `ANTHROPIC_API_KEY` in `.env`. Check that:
