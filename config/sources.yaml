@@ -113,19 +113,23 @@ liveuamap:
 rss_feeds:
   # Narrative/context layer. Two source families here, deliberately kept
   # distinct at triage/analysis time via the `tier` field:
-  #   - Tier 3 "aligned/interpretive" (Times of Israel, Tehran Times):
-  #     reliable on facts, but explicitly one side's framing — the model is
-  #     instructed (prompts/analysis_system.md, source reliability tiering)
-  #     to attribute interpretive claims from these to the source, never
-  #     state them as neutral fact.
-  #   - Tier 2 "wire/agency" (Al Jazeera, BBC, The Guardian, NPR): broad
-  #     international outlets not aligned to a single regional party to
-  #     the conflict, added 2026-07-31 per explicit request for
-  #     international/"unbiased" coverage to balance the two aligned
-  #     sources above. None of these are claimed to be free of all
-  #     editorial perspective (no outlet is), but they're not a party to
-  #     the conflict the way Times of Israel/Tehran Times are, which is
-  #     the specific gap being filled here.
+  #   - Tier 3 "aligned/interpretive" (Times of Israel, Tehran Times,
+  #     Haaretz): reliable on facts, but explicitly one side's framing —
+  #     the model is instructed (prompts/analysis_system.md, source
+  #     reliability tiering) to attribute interpretive claims from these to
+  #     the source, never state them as neutral fact. Times of
+  #     Israel/Haaretz and Tehran Times are opposite sides of the same
+  #     conflict; Haaretz and Tehran Times are further apart still along a
+  #     second axis (critical-of-own-government vs. establishment-aligned)
+  #     — see Haaretz's own note below for why that's still Tier 3, not 2.
+  #   - Tier 2 "wire/agency" (Al Jazeera, BBC, The Guardian, NPR,
+  #     Al-Monitor): broad international/regional outlets not aligned to a
+  #     single regional party to the conflict, added 2026-07-31 per
+  #     explicit request for international/"unbiased" coverage to balance
+  #     the Tier 3 sources above. None of these are claimed to be free of
+  #     all editorial perspective (no outlet is), but they're not a party
+  #     to the conflict the way Times of Israel/Tehran Times/Haaretz are,
+  #     which is the specific gap being filled here.
   #
   # Reuters, AP, AND AFP — all three major global wire agencies — are
   # deliberately excluded, for the same underlying reason: none maintains
@@ -165,9 +169,19 @@ rss_feeds:
     url: "https://www.theguardian.com/world/middleeast/rss"
     poll_interval_minutes: 60
     tier: 2  # wire/agency — independently owned (Scott Trust, not government-funded), ME-specific section
-    note: "Swapped in for France 24 2026-07-31 per explicit preference for a source closer to Reuters/AP than a state-funded broadcaster — independent ownership was the deciding factor. First guess at this URL (.../middle-east/rss, hyphenated) 404'd on a live verify_sources.py run — the Guardian's tag slugs generally don't use hyphens (e.g. world/middleeast, unlike their hyphenated article URLs), so this is the corrected guess, STILL UNCONFIRMED. Re-run scripts/verify_sources.py after pulling and report back if this also 404s."
+    note: "Swapped in for France 24 2026-07-31 per explicit preference for a source closer to Reuters/AP than a state-funded broadcaster — independent ownership was the deciding factor. First guess at this URL (.../middle-east/rss, hyphenated) 404'd on a live verify_sources.py run; corrected to the unhyphenated tag slug (world/middleeast), which verified live the same day."
   - name: "NPR — Middle East"
     url: "https://feeds.npr.org/1009/rss.xml"
     poll_interval_minutes: 60
     tier: 2  # wire/agency — US public radio, ME-specific section
     note: "Verified live 2026-07-31: 10 entries, newest same-day."
+  - name: "Al-Monitor"
+    url: "https://www.al-monitor.com/rss"
+    poll_interval_minutes: 60
+    tier: 2  # wire/agency, but see note — analytical/translation-driven, not raw wire copy, and not aligned to one side
+    note: "Added 2026-07-31. Middle East specialist outlet (the whole site, not a general feed filtered by triage) that translates and syndicates regional journalists into English — one of the spec's originally-named later-phase candidates, never wired in until now. Not aligned to a single party to the conflict, which is why it's Tier 2 rather than 3, but it's genuinely more interpretive/analytical than AP-style wire copy — treat that distinction as real, not just a label. UNVERIFIED from this build environment — confirm with scripts/verify_sources.py."
+  - name: "Haaretz"
+    url: "https://www.haaretz.com/srv/israel-news-rss"
+    poll_interval_minutes: 60
+    tier: 3  # aligned/interpretive — an Israeli domestic paper, still a party to the conflict by nationality even though editorially critical of its own government
+    note: "Added 2026-07-31. Deliberately the domestic-dissent counterpart to Tehran Times: both are domestic papers of a party to the conflict, but where Tehran Times is establishment-aligned, Haaretz is known for reporting critical of the Israeli government — captures internal Israeli dissent/debate that Times of Israel's more mainstream framing doesn't. Still Tier 3, not Tier 2: nationality/proximity to one side of the conflict is what drives the tier, not the paper's stance toward its own government. General Israel-news feed, not ME-region-specific — triage filters relevance, same as the Al Jazeera general feed. UNVERIFIED from this build environment — confirm with scripts/verify_sources.py."

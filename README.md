@@ -150,10 +150,22 @@ conflict themselves. France 24 was the initial pick here but was swapped
 for The Guardian the same day, per explicit preference for a source
 closer to Reuters/AP than a state-funded broadcaster — The Guardian is
 independently owned (Scott Trust), not government-funded like
-BBC/France 24/NPR. **Verified live 2026-07-31**: BBC and NPR confirmed via
-`scripts/verify_sources.py` on real network access (BBC 30 entries, NPR 10
-entries, both same-day); The Guardian has not yet been live-verified —
-re-run the script after pulling this change.
+BBC/France 24/NPR. **Verified live 2026-07-31**, all three: BBC (30
+entries), NPR (10 entries), and The Guardian (its first URL guess 404'd,
+corrected to the unhyphenated tag slug and confirmed live the same day) —
+see the live-run findings log below for the Guardian URL correction.
+
+**Two more added the same day, both spec-named candidates that were never
+previously wired in**: **Al-Monitor** (Tier 2 — a Middle East specialist
+outlet, analytical/translation-driven rather than raw wire copy, not
+aligned to one side of the conflict) and **Haaretz** (Tier 3 — an Israeli
+domestic paper, deliberately the Times of Israel's opposite-leaning
+counterpart: known for reporting critical of the Israeli government,
+capturing internal Israeli dissent that Times of Israel's more mainstream
+framing doesn't; still Tier 3 because nationality/proximity to a party in
+the conflict drives the tier, not the paper's stance toward its own
+government). **Not yet live-verified** — run `scripts/verify_sources.py`
+after pulling this change.
 
 **LiveUAMap is currently disabled** (`liveuamap.enabled: false` in
 `sources.yaml`) — confirmed live (2026-07-23) that its free `/rss` route
@@ -165,10 +177,10 @@ ingest.py` skips it cleanly (logs and moves on) while disabled. To
 re-enable: get a LiveUAMap API key/endpoint, update `feed_url` (and
 whatever auth the paid tier needs — the current fetcher assumes a plain
 RSS GET), flip `enabled: true`, and re-run `scripts/verify_sources.py`.
-Phase 1 runs on the remaining 8 sources (GDELT, Times of Israel, Al
-Jazeera, Tehran Times, BBC, The Guardian, NPR, plus GDELT's own rapid
-15-minute update cadence partially covering the "fastest-updating source"
-gap LiveUAMap was meant to fill).
+Phase 1 runs on the remaining 9 sources (GDELT, Times of Israel, Al
+Jazeera, Tehran Times, BBC, The Guardian, NPR, Al-Monitor, Haaretz, plus
+GDELT's own rapid 15-minute update cadence partially covering the
+"fastest-updating source" gap LiveUAMap was meant to fill).
 
 ## The effort-tier substitution (read this if the numbers look off)
 
@@ -266,16 +278,16 @@ trusting daily use:**
 
 1. `python scripts/verify_sources.py` — confirm GDELT and all RSS feeds
    actually resolve and return current items from your network. **Done and
-   passing as of 2026-07-31** for 6 of the 7 current sources: GDELT, Times
+   passing as of 2026-07-31** for 7 of the 9 current sources: GDELT, Times
    of Israel, Al Jazeera, Tehran Times (verified 2026-07-23), plus BBC News
-   — Middle East and NPR — Middle East (verified 2026-07-31). **Still not
-   verified**: The Guardian — Middle East, swapped in for France 24 the
-   same day. First attempt (`.../world/middle-east/rss`, hyphenated) 404'd
-   on a real `scripts/verify_sources.py` run; corrected to
-   `.../world/middleeast/rss` (the Guardian's tag slugs generally aren't
-   hyphenated) but this is still an unconfirmed guess, not a verified URL
-   — re-run the script after pulling and see the live-run findings log
-   below if it needs another correction. LiveUAMap confirmed dead
+   — Middle East, NPR — Middle East, and The Guardian — Middle East
+   (verified 2026-07-31 — the Guardian's first URL guess 404'd, corrected
+   to the unhyphenated tag slug, then confirmed live; see the live-run
+   findings log below). **Not yet verified**: Al-Monitor and Haaretz,
+   added 2026-07-31 — both spec-named candidates that were never
+   previously wired in, their URLs came from a web search rather than a
+   live fetch from this build environment, so re-run this script after
+   pulling that change and before trusting them. LiveUAMap confirmed dead
    (redirects to a paid-API promo page) and is now disabled in
    `sources.yaml` — see the Configuration section above. Re-run after any
    source config change.
@@ -552,6 +564,20 @@ trusting daily use:**
          second overload — the next time this fires for real, check
          `data/run_log.csv` and the logs for the "retrying once in 60s"
          line.
+     14. **Guessed RSS URL for a new source 404'd on first try.** When The
+         Guardian — Middle East was added to `sources.yaml`, its URL was
+         guessed by analogy to other Guardian RSS feeds
+         (`.../world/middle-east/rss`, hyphenated like their article URLs)
+         rather than fetched live from this build environment. A real
+         `scripts/verify_sources.py` run on 2026-07-31 caught it
+         immediately: `404 Not Found`. The Guardian's tag slugs (unlike
+         article slugs) generally don't use hyphens —
+         `.../world/middleeast/rss` was the corrected guess, and that one
+         verified live. Not a code bug, but a reminder of why every
+         guessed source URL in this file is explicitly flagged
+         UNVERIFIED until a real `scripts/verify_sources.py` run confirms
+         it — a plausible-looking URL built by analogy to a working
+         pattern elsewhere on the same site can still be wrong.
 
      **First full clean run confirmed (2026-07-24):** cold-start handling
      ("no established pattern yet," not fabricated continuity), source
