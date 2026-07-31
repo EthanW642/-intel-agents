@@ -102,7 +102,38 @@ def compute_effort(triaged_item_count: int, active_theses_count: int, pipeline_c
     return "high"
 
 
-def _build_user_prompt(triaged_items: list, memory_context: dict) -> str:
+def _format_oil_snapshot(oil_snapshot: dict | None) -> str:
+    """Renders the EIA oil-price snapshot (pipeline/oil_prices.py) as a
+    prompt section, feeding the system prompt's "Economics & markets"
+    lens real numbers. Omitted entirely when unavailable (no EIA_API_KEY
+    configured, or the fetch failed) — same "just skip this piece of
+    context" pattern as the track-record summary below, not a reason to
+    fail the run."""
+    if not oil_snapshot:
+        return ""
+    labels = {"wti": "WTI", "brent": "Brent"}
+    lines = []
+    for key, label in labels.items():
+        data = oil_snapshot.get(key)
+        if not data:
+            continue
+        change_1d = (
+            f"{data['change_1d_pct']:+.1f}% vs. prior trading day"
+            if data["change_1d_pct"] is not None
+            else "no prior-day comparison available"
+        )
+        change_7d = (
+            f"{data['change_7d_pct']:+.1f}% vs. ~7 days ago"
+            if data["change_7d_pct"] is not None
+            else "no 7-day comparison available"
+        )
+        lines.append(f"- {label}: ${data['price']:.2f}/bbl as of {data['date']} ({change_1d}, {change_7d})")
+    if not lines:
+        return ""
+    return "## Oil price snapshot (EIA spot prices)\n" + "\n".join(lines) + "\n\n"
+
+
+def _build_user_prompt(triaged_items: list, memory_context: dict, oil_snapshot: dict | None = None) -> str:
     items_block = "\n".join(
         f"- [{item.source} (Tier {item.raw_metadata.get('tier', '?')}), {item.published}] {item.title}\n"
         f"  excerpt: {item.text[:500]}\n"
@@ -141,12 +172,15 @@ def _build_user_prompt(triaged_items: list, memory_context: dict) -> str:
         f"## Prediction track record\n{track_record}\n\n" if track_record else ""
     )
 
+    oil_block = _format_oil_snapshot(oil_snapshot)
+
     return (
         f"{memory_status}\n\n"
         f"## Today's surviving items ({len(triaged_items)})\n{items_block}\n\n"
         f"## Active standing theses\n{theses_block}\n\n"
         f"## Tracked entity graph\n{entities_block}\n\n"
         f"## Retrieved related past events\n{related_block}\n\n"
+        f"{oil_block}"
         f"{track_record_block}"
     )
 
@@ -189,6 +223,7 @@ def run_analysis(
     max_tokens: int,
     pipeline_cfg: dict,
     api_key: str | None = None,
+    oil_snapshot: dict | None = None,
 ) -> dict:
     """Single Sonnet call with adaptive thinking, scaled effort. Returns
     {"markdown": full response text, "write_back": parsed JSON block,
@@ -198,7 +233,7 @@ def run_analysis(
     effort = compute_effort(len(triaged_items), len(memory_context["active_theses"]), pipeline_cfg)
 
     system_prompt = _load_system_prompt()
-    user_prompt = _build_user_prompt(triaged_items, memory_context)
+    user_prompt = _build_user_prompt(triaged_items, memory_context, oil_snapshot)
 
     def _call() -> anthropic.types.Message:
         with client.messages.stream(

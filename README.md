@@ -12,6 +12,7 @@ Stage 2a DEDUP           pipeline/dedup.py                          local embedd
 Stage 2b TRIAGE          pipeline/triage.py                         local Ollama (qwen2.5:14b) — no API call
 Stage 2c PREDICTION RES. pipeline/predictions.py                    local Ollama — checks pending predictions, no API call
 Stage 3  MEMORY QUERY    pipeline/memory.py                         Chroma + SQLite; dormancy sweep, track record
+Stage 3b OIL SNAPSHOT    pipeline/oil_prices.py                     EIA API — WTI/Brent spot prices, free, optional
 Stage 4  DEEP ANALYSIS   pipeline/analyze.py                        Claude Sonnet 5, adaptive thinking — the ONLY API call
 Stage 5  WRITE-BACK      pipeline/memory.py, pipeline/render.py,    SQLite/Chroma write-back, Markdown briefing,
          + DELIVERY      pipeline/deliver.py                        Gmail SMTP delivery
@@ -26,7 +27,7 @@ Requires Python 3.11+ and [Ollama](https://ollama.com) installed locally with
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in ANTHROPIC_API_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD
+cp .env.example .env   # fill in ANTHROPIC_API_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, EIA_API_KEY
 ```
 
 Make sure Ollama is running (`ollama serve`, or the background service) before
@@ -38,6 +39,11 @@ enabled) → App Passwords → generate a 16-character password for
 `GMAIL_APP_PASSWORD`. This is not your regular Google password. If the Gmail
 env vars are unset, the pipeline still runs and writes the local `.md`
 briefing — it just skips the email step and logs why.
+
+For the oil price snapshot (optional, added 2026-07-31): register for a free
+EIA API key at [eia.gov/opendata/register.php](https://www.eia.gov/opendata/register.php)
+(no credit card) and set `EIA_API_KEY`. If unset, the pipeline still runs
+normally — it just omits the oil snapshot section from the analysis prompt.
 
 ## Running
 
@@ -138,8 +144,20 @@ laptop — a materially bigger change than a scheduler tweak.
   sentence) for the day's single most consequential ambiguity. The JSON
   write-back contract is byte-for-byte unchanged from the prior prompt, so
   `pipeline/memory.py`'s write-back validation needed no code changes —
-  this was a pure prompt swap. Not yet confirmed live; see the live-run
-  findings log below.
+  this was a pure prompt swap. **Confirmed live 2026-07-31**: 82-item day,
+  `output_tokens=33723` (well under the 128K ceiling, actually lower than
+  the old prompt's previous heaviest day), clean write-back
+  (`malformed_entries_skipped=0`, all 4 thesis-status updates matched
+  existing titles exactly, the new thesis cleared the 2-event bar with 2
+  genuinely distinct events) — see the live-run findings log below.
+- `pipeline/oil_prices.py` — the EIA oil price snapshot fetcher (WTI/Brent
+  spot prices, added 2026-07-31). Requires `EIA_API_KEY` in `.env` (free,
+  see Setup above) — omitted from the analysis prompt entirely if unset or
+  if the fetch fails, same graceful-degradation pattern as Gmail
+  credentials. Not yet confirmed live from this build environment
+  (network-restricted sandbox, same as every other external source here)
+  — the EIA API v2 query-parameter shape was built from published
+  documentation, not a live response. See the live-run findings log below.
 
 Reuters, AP, and AFP — all three major global wire agencies — don't
 maintain an official public RSS feed anymore. The spec explicitly calls
@@ -272,7 +290,7 @@ requiring live network access to those specific services could be run here.
 Hugging Face (for the dedup/Chroma embedding model) and PyPI *were*
 reachable, which is documented per-item below rather than assumed.
 
-**Verified in this environment** (`python -m pytest tests/` — 96 tests,
+**Verified in this environment** (`python -m pytest tests/` — 108 tests,
 all passing; also `python -m py_compile` on every file and a plain import
 of every module):
 - Dedup clustering math (against a fake embedder — the real
@@ -284,8 +302,18 @@ of every module):
 - Effort-tier computation across the low/medium/high/xhigh/max boundaries,
   including the "high is a cap, escalation needs both gates" behavior.
 - Cost estimation math (intro vs. standard pricing).
-- The Sonnet prompt-building logic, including the cold-start flag and
-  track-record inclusion/omission.
+- The Sonnet prompt-building logic, including the cold-start flag,
+  track-record inclusion/omission, and oil-snapshot inclusion/omission
+  (present with real numbers, omitted entirely when `None`, missing
+  1-day/7-day change values rendered as "no comparison available" rather
+  than crashing on `None` arithmetic).
+- The EIA oil price fetcher (`pipeline/oil_prices.py`): successful
+  fetch/parse for both WTI and Brent, one series failing while the other
+  still returns, both series failing returns `None` (prompt section
+  omitted, not a crashed run), malformed rows (missing `value`) skipped
+  rather than raising, and the 7-day lookback correctly picks the closest
+  available trading day rather than requiring an exact calendar match —
+  all against a mocked `httpx.get`, no real EIA API call made.
 - The Sonnet call's retry-once-after-60s behavior on genuinely retryable
   errors (connection/timeout, 429, 500, 529 overloaded) and that it does
   *not* retry non-retryable errors (e.g. 400 bad request) or retry more
@@ -658,14 +686,54 @@ trusting daily use:**
          so this was a pure prompt-file swap — no changes needed to
          `pipeline/analyze.py`'s `_extract_json_block` regex or
          `pipeline/memory.py`'s write-back validation, and all 96 existing
-         tests still pass untouched. **Not yet confirmed live.** This is a
-         real, non-trivial increase in what's asked of the model each run
-         (seven lenses, explicit hop-labeling inside lens arguments,
-         confidence tagging over more content) — worth watching
-         `output_tokens` closely on the next `xhigh`-effort day, given
-         `analysis_max_tokens` is already at Sonnet 5's actual 128K
-         ceiling (findings #11-12 above) with no higher number left to
-         raise it to if this prompt pushes output that high again.
+         tests still pass untouched. This is a real, non-trivial increase
+         in what's asked of the model each run (seven lenses, explicit
+         hop-labeling inside lens arguments, confidence tagging over more
+         content), so the concern going in was `output_tokens` creeping
+         back toward Sonnet 5's 128K ceiling with no higher number left to
+         raise it to.
+
+         **Confirmed live 2026-07-31, first real run on the new prompt**:
+         an 82-item day (the heaviest triaged-item count logged yet, more
+         than the old prompt's previous heaviest at 73 items) produced
+         `output_tokens=33723` — about 26% of the ceiling, and actually
+         *lower* than the old prompt's own heaviest day (98135 tokens on
+         73 items). The tighter structure (explicit "skip a lens with
+         nothing to say, don't pad it," capped hop chains, evidence-gated
+         thesis handling) seems to make output more disciplined, not
+         longer. Cost was $0.396, in the normal range. Write-back was
+         fully clean: `malformed_entries_skipped=0`,
+         `thesis_updates_applied=5` (4 reinforced + 1 new), all 4
+         reinforced-thesis titles matched existing SQLite rows
+         character-for-character (checked directly:
+         `SELECT title, status FROM theses` — no stray duplicate theses
+         created), and the new thesis cited exactly 2 distinct supporting
+         events, clearing the 2-event bar for real rather than being
+         padded. BLUF, the estimative lexicon (with probability and
+         confidence stated as separate axes), two historical analogies
+         each with a genuine stated disanalogy, a full competing-
+         hypotheses/devil's-advocate pass, and explicit hop-labeling all
+         showed up correctly in the live output. The earlier token-budget
+         concern did not materialize on this run.
+     16. **Oil price snapshot added (2026-07-31), not yet confirmed
+         live.** New `pipeline/oil_prices.py` fetches daily WTI/Brent spot
+         prices from the EIA's free official API and injects them into
+         Stage 4's prompt as a new "Oil price snapshot" section, feeding
+         the "Economics & markets" analytical lens real numbers instead
+         of relying on narrative claims like "oil prices rose" from
+         articles — the same day's real briefing (finding #15's live run)
+         made exactly that kind of claim from Guardian/Al-Monitor
+         reporting on Hormuz tanker interdiction, without a number to
+         ground it. Requires `EIA_API_KEY` (free, no credit card,
+         register at eia.gov/opendata) — if unset or the fetch fails, the
+         section is omitted entirely and the run proceeds normally, same
+         degrade-gracefully pattern as missing Gmail credentials. The
+         exact EIA API v2 query shape (`facets[series][]`, `frequency`,
+         `sort[]` parameters) was built from EIA's published
+         documentation, not confirmed against a live response, since this
+         sandbox can't reach external APIs — get an `EIA_API_KEY`, run
+         the pipeline, and check whether the "Oil price snapshot" section
+         actually appears with real numbers before trusting it.
 
      **First full clean run confirmed (2026-07-24):** cold-start handling
      ("no established pattern yet," not fabricated continuity), source

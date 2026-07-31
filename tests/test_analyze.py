@@ -237,3 +237,28 @@ def test_build_user_prompt_includes_track_record_when_present():
     }
     prompt = _build_user_prompt([], ctx)
     assert "6 of last 10 confirmed" in prompt
+
+
+def test_build_user_prompt_omits_oil_snapshot_when_none():
+    prompt = _build_user_prompt([], MEMORY_CONTEXT, oil_snapshot=None)
+    assert "Oil price snapshot" not in prompt
+
+
+def test_build_user_prompt_includes_oil_snapshot_when_present():
+    oil_snapshot = {
+        "wti": {"date": "2026-07-31", "price": 68.42, "change_1d_pct": 3.1, "change_7d_pct": 8.7},
+        "brent": {"date": "2026-07-31", "price": 71.90, "change_1d_pct": 2.8, "change_7d_pct": 9.4},
+    }
+    prompt = _build_user_prompt([], MEMORY_CONTEXT, oil_snapshot=oil_snapshot)
+    assert "Oil price snapshot" in prompt
+    assert "$68.42/bbl" in prompt
+    assert "+3.1%" in prompt
+    assert "$71.90/bbl" in prompt
+
+
+def test_build_user_prompt_handles_missing_change_pct_gracefully():
+    # First day of data ever collected -- no prior day/week to compare against.
+    oil_snapshot = {"wti": {"date": "2026-07-31", "price": 68.42, "change_1d_pct": None, "change_7d_pct": None}}
+    prompt = _build_user_prompt([], MEMORY_CONTEXT, oil_snapshot=oil_snapshot)
+    assert "no prior-day comparison available" in prompt
+    assert "no 7-day comparison available" in prompt

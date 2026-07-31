@@ -17,6 +17,7 @@ from pipeline.analyze import run_analysis
 from pipeline.dedup import dedup_items
 from pipeline.deliver import send_briefing_email, send_ollama_outage_alert
 from pipeline.memory import init_store, query_memory, write_back
+from pipeline.oil_prices import fetch_oil_snapshot
 from pipeline.ollama_client import OllamaUnavailableError
 from pipeline.predictions import resolve_predictions
 from pipeline.render import render_briefing
@@ -97,6 +98,11 @@ def run() -> Path | None:
             run_date=run_date,
         )
 
+        logger.info("Stage 3b: oil price snapshot (EIA — free, no cost either way)")
+        oil_snapshot = fetch_oil_snapshot(os.environ.get("EIA_API_KEY"))
+        if oil_snapshot is None:
+            logger.info("No oil price snapshot this run (EIA_API_KEY unset or fetch failed) — omitted from prompt.")
+
         logger.info("Stage 4: deep analysis (Sonnet — the only API call)")
         result = run_analysis(
             triaged,
@@ -105,6 +111,7 @@ def run() -> Path | None:
             model=pipeline_cfg["analysis_model"],
             max_tokens=pipeline_cfg["analysis_max_tokens"],
             pipeline_cfg=pipeline_cfg,
+            oil_snapshot=oil_snapshot,
         )
         log_row.update(
             {
