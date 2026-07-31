@@ -7,7 +7,7 @@ and email delivery. See the full build spec for later phases.
 ## Architecture (this phase)
 
 ```
-Stage 1  INGEST         agents/middle_east/{sources.py,ingest.py}   GDELT + LiveUAMap + RSS
+Stage 1  INGEST         agents/middle_east/{sources.py,ingest.py}   GDELT + RSS
 Stage 2a DEDUP           pipeline/dedup.py                          local embeddings (all-MiniLM-L6-v2)
 Stage 2b TRIAGE          pipeline/triage.py                         local Ollama (qwen2.5:14b) — no API call
 Stage 2c PREDICTION RES. pipeline/predictions.py                    local Ollama — checks pending predictions, no API call
@@ -122,10 +122,10 @@ laptop — a materially bigger change than a scheduler tweak.
   prediction track-record threshold, seeded entity watchlist, seeded
   standing theses, daily run time. Nothing here is hardcoded in pipeline
   code — tune it here.
-- `config/sources.yaml` — GDELT country-code filters, LiveUAMap feed, RSS
-  feed list, each source's reliability tier (spec section 5's Tier 1-4).
-  **Verify these URLs resolve from your machine** with
-  `scripts/verify_sources.py` before relying on them.
+- `config/sources.yaml` — GDELT country-code filters, RSS feed list, each
+  source's reliability tier (spec section 5's Tier 1-4). **Verify these
+  URLs resolve from your machine** with `scripts/verify_sources.py` before
+  relying on them.
 
 Reuters, AP, and AFP — all three major global wire agencies — are
 deliberately excluded from `sources.yaml`: none maintains an official
@@ -167,20 +167,29 @@ the conflict drives the tier, not the paper's stance toward its own
 government). **Verified live 2026-07-31**: both resolved on the first URL
 guess (Al-Monitor 20 entries, Haaretz 20 entries, both same-day).
 
-**LiveUAMap is currently disabled** (`liveuamap.enabled: false` in
-`sources.yaml`) — confirmed live (2026-07-23) that its free `/rss` route
-302-redirects to a paid-API signup page (`.../promo/api`) regardless of
-request headers; it's not bot-blocking, the free tier is gone. This is the
-exact contingency the spec names for LiveUAMap ("not needed to start —
-only revisit if the free RSS feed proves too thin"). `agents/middle_east/
-ingest.py` skips it cleanly (logs and moves on) while disabled. To
-re-enable: get a LiveUAMap API key/endpoint, update `feed_url` (and
-whatever auth the paid tier needs — the current fetcher assumes a plain
-RSS GET), flip `enabled: true`, and re-run `scripts/verify_sources.py`.
-Phase 1 runs on the remaining 9 sources (GDELT, Times of Israel, Al
-Jazeera, Tehran Times, BBC, The Guardian, NPR, Al-Monitor, Haaretz, plus
-GDELT's own rapid 15-minute update cadence partially covering the
-"fastest-updating source" gap LiveUAMap was meant to fill).
+**LiveUAMap was removed 2026-07-31** (not just disabled — the config block
+and its special-case fetcher code are both gone; see git history if you
+need the old `feed_url`/rationale). It had been disabled since 2026-07-23,
+when its free `/rss` route started 302-redirecting to a paid-API signup
+page (`.../promo/api`) regardless of request headers — not bot-blocking,
+the free tier is just gone. This is the exact contingency the spec names
+for LiveUAMap ("not needed to start — only revisit if the free RSS feed
+proves too thin"). In its place: a **Google News RSS search query**
+(`rss_feeds` entry "Google News — Middle East", Tier 4), added the same
+day as a genuine functional replacement rather than another named outlet
+— it's an official Google endpoint (no API key, no signup) that
+aggregates across a large, uncurated set of publishers in near-real time,
+which is the same high-recall/low-individual-reliability role LiveUAMap
+held, not just a topical similarity. It slots into the exact same generic
+RSS fetch/dedup/triage/`verify_sources.py` path every other feed uses — no
+special-case code needed, unlike LiveUAMap's old bespoke fetcher. Not yet
+live-verified from this build environment.
+
+Phase 1 runs on 10 sources total: GDELT, Times of Israel, Al Jazeera,
+Tehran Times, BBC, The Guardian, NPR, Al-Monitor, Haaretz, and the Google
+News search query (which also partially covers the "fastest-updating
+source" gap LiveUAMap was meant to fill, alongside GDELT's own rapid
+15-minute update cadence).
 
 ## The effort-tier substitution (read this if the numbers look off)
 
@@ -278,14 +287,16 @@ trusting daily use:**
 
 1. `python scripts/verify_sources.py` — confirm GDELT and all RSS feeds
    actually resolve and return current items from your network. **Done and
-   passing as of 2026-07-31, all 9 current sources OK**: GDELT, Times of
-   Israel, Al Jazeera, Tehran Times (verified 2026-07-23), plus BBC News —
-   Middle East, NPR — Middle East, The Guardian — Middle East (its first
+   passing as of 2026-07-31** for 8 of the 9 RSS feeds (plus GDELT): Times
+   of Israel, Al Jazeera, Tehran Times (verified 2026-07-23), plus BBC News
+   — Middle East, NPR — Middle East, The Guardian — Middle East (its first
    URL guess 404'd, corrected to the unhyphenated tag slug, then confirmed
    live — see the live-run findings log below), Al-Monitor, and Haaretz
-   (all verified 2026-07-31). LiveUAMap confirmed dead (redirects to a
-   paid-API promo page) and is now disabled in `sources.yaml` — see the
-   Configuration section above. Re-run after any source config change.
+   (all verified 2026-07-31). **Not yet verified**: the Google News —
+   Middle East query that replaced LiveUAMap (also added 2026-07-31) — a
+   `news.google.com/rss/search` URL built by hand, not fetched live from
+   this build environment, so re-run this script after pulling that change
+   and before trusting it. Re-run after any source config change.
 2. A real end-to-end run: `ollama serve` (with `qwen2.5:14b` pulled) running
    in the background, then `python -m agents.middle_east.run` with a real
    `ANTHROPIC_API_KEY` in `.env`. Check that:

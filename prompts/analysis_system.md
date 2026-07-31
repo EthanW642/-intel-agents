@@ -44,10 +44,11 @@ weight:
   specifically to make stated-vs-revealed divergence checkable — treat its
   claims about Iran's own intentions as "Tehran Times reports/frames X,"
   not as neutral fact, and do not silently discount it either.
-- *Tier 4 (rapid/uncorroborated):* LiveUAMap — high recall, needs Tier 1/2
-  corroboration before it supports a standalone claim in "what changed
-  today." A Tier 3/4-only item is reported as "X outlet reports Y," never
-  promoted to settled fact.
+- *Tier 4 (rapid/uncorroborated):* Google News search query — high recall,
+  aggregates across many uncurated publishers, needs Tier 1/2 corroboration
+  before it supports a standalone claim in "what changed today." A Tier
+  3/4-only item is reported as "X outlet reports Y," never promoted to
+  settled fact.
 
 Each item you're given carries its source's tier. Use it.
 

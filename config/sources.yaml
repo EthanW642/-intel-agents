@@ -90,26 +90,6 @@ gdelt:
   min_num_mentions: 10
   min_abs_goldstein: 5.0  # GoldsteinScale runs -10..+10; 5 = a clearly significant event, not routine chatter
 
-liveuamap:
-  # High-recall, lower-reliability rapid-update layer (spec 4.1). Treat
-  # exactly like any other RSS source at triage time — no whitelisting past
-  # triage. Polled more frequently than the narrative RSS layer.
-  #
-  # DISABLED as of 2026-07-23 verification: the free /rss route now
-  # returns a 302 redirect to https://israelpalestine.liveuamap.com/promo/api
-  # (a signup page for their paid API tier) regardless of request headers —
-  # confirmed via `curl -D -` showing the raw redirect, not a bot-wall.
-  # This is the exact contingency the spec already calls out: "A paid
-  # LiveUAMap API tier exists ... not needed to start — only revisit if
-  # the free RSS feed proves too thin." The free tier isn't thin here, it's
-  # gone. ingest.py skips this source entirely while enabled: false.
-  # Re-enable (and update feed_url if the paid tier uses a different one)
-  # if/when a LiveUAMap API key is obtained — see README.
-  enabled: false
-  feed_url: "https://israelpalestine.liveuamap.com/rss"
-  poll_interval_minutes: 20
-  tier: 4  # rapid/uncorroborated — needs Tier 1/2 corroboration (spec 5.1)
-
 rss_feeds:
   # Narrative/context layer. Two source families here, deliberately kept
   # distinct at triage/analysis time via the `tier` field:
@@ -130,6 +110,13 @@ rss_feeds:
   #     all editorial perspective (no outlet is), but they're not a party
   #     to the conflict the way Times of Israel/Tehran Times/Haaretz are,
   #     which is the specific gap being filled here.
+  #   - Tier 4 "rapid/uncorroborated" (Google News — Middle East, last
+  #     entry below): a standing search query, not a single outlet, added
+  #     2026-07-31 to fill the role the disabled `liveuamap` source used to
+  #     hold (LiveUAMap's free RSS tier died 2026-07-23 — see git history
+  #     for the removed block if you need the old feed_url/rationale). High
+  #     recall, needs Tier 1/2 corroboration before anything from it
+  #     supports a standalone claim — never whitelisted past triage.
   #
   # Reuters, AP, AND AFP — all three major global wire agencies — are
   # deliberately excluded, for the same underlying reason: none maintains
@@ -185,3 +172,8 @@ rss_feeds:
     poll_interval_minutes: 60
     tier: 3  # aligned/interpretive — an Israeli domestic paper, still a party to the conflict by nationality even though editorially critical of its own government
     note: "Added 2026-07-31. Deliberately the domestic-dissent counterpart to Tehran Times: both are domestic papers of a party to the conflict, but where Tehran Times is establishment-aligned, Haaretz is known for reporting critical of the Israeli government — captures internal Israeli dissent/debate that Times of Israel's more mainstream framing doesn't. Still Tier 3, not Tier 2: nationality/proximity to one side of the conflict is what drives the tier, not the paper's stance toward its own government. General Israel-news feed, not ME-region-specific — triage filters relevance, same as the Al Jazeera general feed. Verified live 2026-07-31: 20 entries, newest same-day."
+  - name: "Google News — Middle East"
+    url: "https://news.google.com/rss/search?q=Israel%20OR%20Gaza%20OR%20Iran%20OR%20Lebanon%20OR%20Syria%20OR%20Yemen%20OR%20%22Middle%20East%22&hl=en-US&gl=US&ceid=US:en"
+    poll_interval_minutes: 20  # polled more frequently than the narrative layer, same cadence LiveUAMap used
+    tier: 4  # rapid/uncorroborated — needs Tier 1/2 corroboration (spec 5.1), same role LiveUAMap held
+    note: "Replaces LiveUAMap (removed from this file — see git history) as the Tier 4 rapid/high-recall layer, added 2026-07-31. Official Google endpoint, no API key, no signup — a standing search query rather than a single outlet's feed, so it aggregates across a large, uncurated set of publishers in near-real time. That's a deliberate match to what made LiveUAMap Tier 4 in the first place: high recall, low individual-item reliability, explicitly requiring Tier 1/2 corroboration before anything from it supports a standalone claim (see prompts/analysis_system.md). Not yet live-verified from this build environment — confirm with scripts/verify_sources.py."

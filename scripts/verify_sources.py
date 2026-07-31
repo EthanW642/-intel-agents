@@ -81,21 +81,13 @@ def _check_gdelt(timeout: float = 15.0) -> tuple[bool, str]:
 
 def main() -> int:
     cfg = yaml.safe_load(SOURCES_PATH.read_text())
-    # status per result: "OK" | "FAIL" | "SKIPPED" — SKIPPED (disabled in
-    # config, e.g. LiveUAMap's free RSS route redirecting to a paid-API
-    # promo page) doesn't count against the overall pass/fail.
+    # status per result: "OK" | "FAIL" — no more "SKIPPED" case since
+    # LiveUAMap (the one disabled-but-configured source that needed it) was
+    # retired 2026-07-31 in favor of a Google News RSS query in rss_feeds.
     results: list[tuple[str, str, str]] = []
 
     ok, detail = _check_gdelt()
     results.append(("GDELT", "OK" if ok else "FAIL", detail))
-
-    liveuamap = cfg.get("liveuamap", {})
-    if liveuamap.get("feed_url"):
-        if liveuamap.get("enabled", True):
-            ok, detail = _check_rss("LiveUAMap", liveuamap["feed_url"])
-            results.append(("LiveUAMap", "OK" if ok else "FAIL", detail))
-        else:
-            results.append(("LiveUAMap", "SKIPPED", "disabled in config/sources.yaml — see comment there"))
 
     for feed in cfg.get("rss_feeds", []):
         ok, detail = _check_rss(feed["name"], feed["url"])

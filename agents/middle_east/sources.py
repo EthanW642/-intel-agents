@@ -20,11 +20,11 @@ logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "sources.yaml"
 
-# Some feeds (LiveUAMap confirmed; likely others) 403 requests that don't
-# look like a browser — no default User-Agent, no Accept header. This is
-# the single source of truth for those headers; scripts/verify_sources.py
-# imports it too, so the pre-flight check and real ingestion never drift
-# apart on this.
+# Some feeds (LiveUAMap, since retired, confirmed this; likely others) 403
+# requests that don't look like a browser — no default User-Agent, no
+# Accept header. This is the single source of truth for those headers;
+# scripts/verify_sources.py imports it too, so the pre-flight check and
+# real ingestion never drift apart on this.
 RSS_REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -35,9 +35,10 @@ RSS_REQUEST_HEADERS = {
     # A plain User-Agent/Accept pair alone wasn't enough for LiveUAMap
     # (still 403'd) — some bot-walls specifically check for a same-site
     # Referer to distinguish "loaded from a browser tab" from a bare
-    # script hit. If this still doesn't clear it, the wall is likely doing
-    # something header-based fixes can't solve (a JS/Cloudflare challenge)
-    # — see the LiveUAMap section of config/sources.yaml.
+    # script hit. Left as a generic same-origin-looking value even after
+    # LiveUAMap's removal since it's harmless for every other feed (all
+    # verified live with this header set) and re-tuning it isn't worth the
+    # churn unless a future feed 403s on User-Agent/Accept alone too.
     "Referer": "https://israelpalestine.liveuamap.com/",
 }
 
@@ -260,10 +261,6 @@ def fetch_rss(name: str, url: str, tier: int | None = None, timeout: float = 15.
             )
         )
     return items
-
-
-def fetch_liveuamap(cfg: dict) -> list[RawItem]:
-    return fetch_rss("LiveUAMap Israel-Palestine", cfg["feed_url"], tier=cfg.get("tier", 4))
 
 
 def fetch_all_rss(cfg: dict) -> list[RawItem]:
