@@ -127,11 +127,22 @@ laptop — a materially bigger change than a scheduler tweak.
   **Verify these URLs resolve from your machine** with
   `scripts/verify_sources.py` before relying on them.
 
-Reuters is deliberately excluded from `sources.yaml` — the spec explicitly
-prohibits it (Reuters retired public RSS in 2020; wire content still
-reaches the pipeline indirectly via GDELT's GKG layer). Tehran Times is
-included specifically because the spec calls it out as the source that
-makes the stated-vs-revealed-behavior divergence check actually checkable.
+Reuters and AP are both deliberately excluded from `sources.yaml` — neither
+maintains an official public RSS feed anymore (the spec explicitly calls
+this out for Reuters, retired in 2020; a live check on 2026-07-31 confirmed
+AP is in the same position — no first-party feed, only unofficial
+third-party scrapers). Wire content from both still reaches the pipeline
+indirectly via GDELT's GKG layer. Tehran Times is included specifically
+because the spec calls it out as the source that makes the
+stated-vs-revealed-behavior divergence check actually checkable.
+
+**International wire-style sources added 2026-07-31** (BBC News — Middle
+East, France 24 — Middle East, NPR — Middle East, all Tier 2) to balance
+the two Tier 3 aligned/interpretive sources already in the file (Times of
+Israel, Tehran Times) with outlets that aren't a party to the conflict
+themselves. None of these three have been live-verified from this build
+environment yet — run `scripts/verify_sources.py` on your Mac before
+trusting them, same as every other source in this file.
 
 **LiveUAMap is currently disabled** (`liveuamap.enabled: false` in
 `sources.yaml`) — confirmed live (2026-07-23) that its free `/rss` route
@@ -143,10 +154,10 @@ ingest.py` skips it cleanly (logs and moves on) while disabled. To
 re-enable: get a LiveUAMap API key/endpoint, update `feed_url` (and
 whatever auth the paid tier needs — the current fetcher assumes a plain
 RSS GET), flip `enabled: true`, and re-run `scripts/verify_sources.py`.
-Phase 1 runs on the remaining 5 sources (GDELT, Times of Israel, Al
-Jazeera, Tehran Times, plus GDELT's own rapid 15-minute update cadence
-partially covering the "fastest-updating source" gap LiveUAMap was meant
-to fill).
+Phase 1 runs on the remaining 8 sources (GDELT, Times of Israel, Al
+Jazeera, Tehran Times, BBC, France 24, NPR, plus GDELT's own rapid
+15-minute update cadence partially covering the "fastest-updating source"
+gap LiveUAMap was meant to fill).
 
 ## The effort-tier substitution (read this if the numbers look off)
 
@@ -242,12 +253,16 @@ of every module):
 **Not verified from this environment — do this on your Mac before
 trusting daily use:**
 
-1. `python scripts/verify_sources.py` — confirm GDELT and all three RSS
-   feeds actually resolve and return current items from your network.
-   **Already done and passing as of 2026-07-23**: GDELT + Times of Israel +
-   Al Jazeera + Tehran Times all OK; LiveUAMap confirmed dead (redirects
-   to a paid-API promo page) and is now disabled in `sources.yaml` — see
-   the Configuration section above. Re-run after any source config change.
+1. `python scripts/verify_sources.py` — confirm GDELT and all RSS feeds
+   actually resolve and return current items from your network.
+   **Done and passing as of 2026-07-23** for the original 3 RSS feeds:
+   GDELT + Times of Israel + Al Jazeera + Tehran Times all OK; LiveUAMap
+   confirmed dead (redirects to a paid-API promo page) and is now disabled
+   in `sources.yaml` — see the Configuration section above. **Not yet
+   verified**: the 3 international sources added 2026-07-31 (BBC, France
+   24, NPR) — their URLs were found via web search, not a live fetch from
+   this build environment, so re-run this script after pulling that change
+   and before trusting them. Re-run after any source config change.
 2. A real end-to-end run: `ollama serve` (with `qwen2.5:14b` pulled) running
    in the background, then `python -m agents.middle_east.run` with a real
    `ANTHROPIC_API_KEY` in `.env`. Check that:

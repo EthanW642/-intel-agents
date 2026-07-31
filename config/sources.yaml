@@ -111,15 +111,30 @@ liveuamap:
   tier: 4  # rapid/uncorroborated — needs Tier 1/2 corroboration (spec 5.1)
 
 rss_feeds:
-  # Narrative/context layer. Phase 1 uses 3 of the spec's 6 named sources.
-  # Reuters is deliberately excluded — the spec explicitly prohibits it
-  # ("Reuters discontinued public RSS feeds in 2020 — do not use a Reuters
-  # RSS source"; wire content is still captured indirectly via GDELT's GKG
-  # layer). Tehran Times is included specifically per spec 4.1: it's the
-  # source that makes the stated-vs-revealed-behavior divergence check
-  # (spec 5, reasoning step 3) actually checkable rather than one-sided.
-  # Extend with AP Middle East / Middle East Eye / Axios Middle East in a
-  # later phase per spec section 4.
+  # Narrative/context layer. Two source families here, deliberately kept
+  # distinct at triage/analysis time via the `tier` field:
+  #   - Tier 3 "aligned/interpretive" (Times of Israel, Tehran Times):
+  #     reliable on facts, but explicitly one side's framing — the model is
+  #     instructed (prompts/analysis_system.md, source reliability tiering)
+  #     to attribute interpretive claims from these to the source, never
+  #     state them as neutral fact.
+  #   - Tier 2 "wire/agency" (Al Jazeera, BBC, France 24, NPR): broad
+  #     international outlets not aligned to a single regional party to
+  #     the conflict, added 2026-07-31 per explicit request for
+  #     international/"unbiased" coverage to balance the two aligned
+  #     sources above. None of these are claimed to be free of all
+  #     editorial perspective (no outlet is), but they're not a party to
+  #     the conflict the way Times of Israel/Tehran Times are, which is
+  #     the specific gap being filled here.
+  #
+  # AP and Reuters are BOTH deliberately excluded, for the same underlying
+  # reason: neither maintains an official public RSS feed anymore. The
+  # spec already calls this out for Reuters ("discontinued public RSS
+  # feeds in 2020 — do not use a Reuters RSS source"); a live check
+  # 2026-07-31 confirmed AP is in the same position — no first-party feed,
+  # only unofficial third-party scrapers/generators, which aren't a source
+  # this pipeline should depend on for wire content. Both are still
+  # captured indirectly via GDELT's GKG layer, same as before.
   - name: "Times of Israel"
     url: "https://www.timesofisrael.com/feed/"
     poll_interval_minutes: 60
@@ -134,3 +149,18 @@ rss_feeds:
     poll_interval_minutes: 60
     tier: 3  # aligned/interpretive — explicitly establishment-aligned, not neutral (spec 4.1)
     note: "Domestic Iranian English-language daily — captures Iran's own stated/official framing directly, not filtered through Western/Israeli coverage of it."
+  - name: "BBC News — Middle East"
+    url: "https://feeds.bbci.co.uk/news/world/middle_east/rss.xml"
+    poll_interval_minutes: 60
+    tier: 2  # wire/agency — UK public broadcaster, ME-specific section, not a party to the conflict
+    note: "UNVERIFIED from this build environment (network-restricted sandbox) — confirm with scripts/verify_sources.py before relying on it."
+  - name: "France 24 — Middle East"
+    url: "https://www.france24.com/en/middle-east/rss"
+    poll_interval_minutes: 60
+    tier: 2  # wire/agency — French state-funded international broadcaster, ME-specific vertical
+    note: "UNVERIFIED from this build environment — confirm with scripts/verify_sources.py. French state funding is disclosed here for the same transparency reason Tehran Times' state alignment is noted, even though France 24's ME coverage isn't a party to this specific conflict the way Tehran Times is."
+  - name: "NPR — Middle East"
+    url: "https://feeds.npr.org/1009/rss.xml"
+    poll_interval_minutes: 60
+    tier: 2  # wire/agency — US public radio, ME-specific section
+    note: "UNVERIFIED from this build environment — confirm with scripts/verify_sources.py."
