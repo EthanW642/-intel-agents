@@ -126,6 +126,20 @@ laptop — a materially bigger change than a scheduler tweak.
   source's reliability tier (spec section 5's Tier 1-4). **Verify these
   URLs resolve from your machine** with `scripts/verify_sources.py` before
   relying on them.
+- `prompts/analysis_system.md` — the Stage 4 (Sonnet) system prompt.
+  Rewritten 2026-07-31 to a full ICD 203-style tradecraft standard: adds a
+  bolded BLUF, an estimative-language lexicon (`almost no chance` through
+  `almost certain`, mapped to percentage bands) with probability kept
+  distinct from confidence, seven analytical lenses (geography/logistics,
+  domestic politics, historical precedent — with a *mandatory* stated
+  disanalogy, law/legitimacy, economics, military-technical, social/
+  religious/informational) feeding the second-order-implications section,
+  and a competing-hypotheses step (with a required devil's-advocate
+  sentence) for the day's single most consequential ambiguity. The JSON
+  write-back contract is byte-for-byte unchanged from the prior prompt, so
+  `pipeline/memory.py`'s write-back validation needed no code changes —
+  this was a pure prompt swap. Not yet confirmed live; see the live-run
+  findings log below.
 
 Reuters, AP, and AFP — all three major global wire agencies — don't
 maintain an official public RSS feed anymore. The spec explicitly calls
@@ -607,6 +621,51 @@ trusting daily use:**
          UNVERIFIED until a real `scripts/verify_sources.py` run confirms
          it — a plausible-looking URL built by analogy to a working
          pattern elsewhere on the same site can still be wrong.
+     15. **Analysis prompt rewritten to a full ICD 203-style tradecraft
+         standard (2026-07-31).** Not a bug fix — a deliberate upgrade,
+         drafted by a separate Claude session and reviewed/merged in here
+         after checking it against the actual write-back code and the
+         current source roster. Adds: a bolded BLUF; an estimative-language
+         lexicon (`almost no chance` 1-5% through `almost certain` 95-99%)
+         with probability kept explicitly distinct from confidence; seven
+         analytical lenses (geography/logistics, domestic politics,
+         historical precedent with a *mandatory* stated disanalogy,
+         law/legitimacy, economics, military-technical, social/religious/
+         informational) feeding the second-order-implications section, each
+         one skipped rather than padded when today's evidence gives it
+         nothing to say; and a competing-hypotheses step with a required
+         devil's-advocate sentence for the day's single most consequential
+         ambiguity. Reasoning protocol grew from 8 steps to 10 (added
+         explicit conflict handling and the competing-hypotheses step) —
+         checked every internal cross-reference across the renumbering
+         (self-critique citing "steps 1-8," confidence tagging citing
+         "step 7"/"step 6," output section 4 citing "step 7"/"step 8") and
+         none drifted.
+
+         The source-tier examples in the draft as originally written were
+         stale — still listing "AP, Al Jazeera, Axios" for Tier 2, "Times
+         of Israel, Middle East Eye, Tehran Times" for Tier 3, and
+         "LiveUAMap" for Tier 4, none of which matches the 13-source
+         roster this session had just finished building (see findings
+         above). Middle East Eye in particular was never actually wired
+         into `sources.yaml` at all — a leftover from the original spec
+         text, not a real source. Fixed before merging: Tier 2 now lists
+         Al Jazeera, BBC, The Guardian, NPR, Al-Monitor, and the
+         site:-scoped AP/Reuters/Axios entries; Tier 3 adds Haaretz; Tier 4
+         points at the Google News query, not LiveUAMap.
+
+         The JSON write-back contract is unchanged from the prior prompt,
+         so this was a pure prompt-file swap — no changes needed to
+         `pipeline/analyze.py`'s `_extract_json_block` regex or
+         `pipeline/memory.py`'s write-back validation, and all 96 existing
+         tests still pass untouched. **Not yet confirmed live.** This is a
+         real, non-trivial increase in what's asked of the model each run
+         (seven lenses, explicit hop-labeling inside lens arguments,
+         confidence tagging over more content) — worth watching
+         `output_tokens` closely on the next `xhigh`-effort day, given
+         `analysis_max_tokens` is already at Sonnet 5's actual 128K
+         ceiling (findings #11-12 above) with no higher number left to
+         raise it to if this prompt pushes output that high again.
 
      **First full clean run confirmed (2026-07-24):** cold-start handling
      ("no established pattern yet," not fabricated continuity), source
