@@ -110,29 +110,47 @@ rss_feeds:
   #     all editorial perspective (no outlet is), but they're not a party
   #     to the conflict the way Times of Israel/Tehran Times/Haaretz are,
   #     which is the specific gap being filled here.
-  #   - Tier 4 "rapid/uncorroborated" (Google News — Middle East, last
-  #     entry below): a standing search query, not a single outlet, added
-  #     2026-07-31 to fill the role the disabled `liveuamap` source used to
-  #     hold (LiveUAMap's free RSS tier died 2026-07-23 — see git history
-  #     for the removed block if you need the old feed_url/rationale). High
+  #   - Tier 4 "rapid/uncorroborated" (Google News — Middle East, below):
+  #     a standing search query, not a single outlet, added 2026-07-31 to
+  #     fill the role the removed `liveuamap` source used to hold
+  #     (LiveUAMap's free RSS tier died 2026-07-23 — see git history for
+  #     the removed block if you need the old feed_url/rationale). High
   #     recall, needs Tier 1/2 corroboration before anything from it
   #     supports a standalone claim — never whitelisted past triage.
+  #   - AP/Reuters/Axios "via Google News" (last 3 entries): Tier 2, NOT
+  #     Tier 4 — see the paragraph below for why these are different from
+  #     the general Google News query above.
   #
-  # Reuters, AP, AND AFP — all three major global wire agencies — are
-  # deliberately excluded, for the same underlying reason: none maintains
-  # an official public RSS feed anymore. The spec already calls this out
-  # for Reuters ("discontinued public RSS feeds in 2020 — do not use a
-  # Reuters RSS source"); live checks on 2026-07-31 confirmed AP is in the
-  # same position (no first-party feed, only unofficial third-party
+  # Reuters, AP, and AFP — all three major global wire agencies — don't
+  # maintain an official public RSS feed anymore. The spec already calls
+  # this out for Reuters ("discontinued public RSS feeds in 2020 — do not
+  # use a Reuters RSS source"); live checks on 2026-07-31 confirmed AP is
+  # in the same position (no first-party feed, only unofficial third-party
   # scrapers/generators), and AFP too — AFP has stated its full RSS is off
   # deliberately, since a free public feed would compete with its own
   # paying syndication clients. This isn't specific to any one agency,
-  # it's how wire agencies distribute content now; none of the three are a
-  # source this pipeline should depend on an unofficial scraper for. All
-  # three are still captured indirectly via GDELT's GKG layer, same as
-  # before. The Guardian was added in their place as the closest available
-  # substitute: independently owned (Scott Trust, not government-funded,
+  # it's how wire agencies distribute content now, and none of the three
+  # is a source this pipeline should depend on an unofficial *scraper*
+  # for. All three are still captured indirectly via GDELT's GKG layer,
+  # same as before. The Guardian was added as international balance in
+  # their place: independently owned (Scott Trust, not government-funded,
   # unlike BBC/France 24/NPR/VOA), with a confirmed official RSS feed.
+  #
+  # AP and Reuters ARE reached below anyway, though — not via an
+  # unofficial third-party scraper, but via Google News RSS search scoped
+  # with `site:apnews.com` / `site:reuters.com`. This is different in kind
+  # from a scraper: it's Google's own official search index, returning
+  # that outlet's actual articles, not a re-hosted copy of their content.
+  # Tagged Tier 2 (the outlet's real tier) rather than Tier 4, since the
+  # high-recall/low-reliability tradeoff that makes the general Google
+  # News query above Tier 4 doesn't apply — every item genuinely is
+  # AP's/Reuters'/Axios' own reporting, Google is just the delivery
+  # mechanism standing in for the RSS feed they don't publish. Axios is
+  # included the same way even though it does have a general RSS feed
+  # (spec 5.1 names it as a Tier 2 example directly) — it just has no
+  # Middle East-specific vertical, so this reaches the ME-relevant subset
+  # directly instead of relying on triage to filter Axios' mostly
+  # US-domestic-policy general feed.
   - name: "Times of Israel"
     url: "https://www.timesofisrael.com/feed/"
     poll_interval_minutes: 60
@@ -177,3 +195,18 @@ rss_feeds:
     poll_interval_minutes: 20  # polled more frequently than the narrative layer, same cadence LiveUAMap used
     tier: 4  # rapid/uncorroborated — needs Tier 1/2 corroboration (spec 5.1), same role LiveUAMap held
     note: "Replaces LiveUAMap (removed from this file — see git history) as the Tier 4 rapid/high-recall layer, added 2026-07-31. Official Google endpoint, no API key, no signup — a standing search query rather than a single outlet's feed, so it aggregates across a large, uncurated set of publishers in near-real time. That's a deliberate match to what made LiveUAMap Tier 4 in the first place: high recall, low individual-item reliability, explicitly requiring Tier 1/2 corroboration before anything from it supports a standalone claim (see prompts/analysis_system.md). Not yet live-verified from this build environment — confirm with scripts/verify_sources.py."
+  - name: "AP — via Google News"
+    url: "https://news.google.com/rss/search?q=site%3Aapnews.com%20%28Israel%20OR%20Gaza%20OR%20Iran%20OR%20Lebanon%20OR%20Syria%20OR%20Yemen%20OR%20%22Middle%20East%22%29&hl=en-US&gl=US&ceid=US:en"
+    poll_interval_minutes: 60
+    tier: 2  # wire/agency — this IS AP's own content, just reached via Google's site: search since AP has no RSS of its own (see note above)
+    note: "Added 2026-07-31: a Google News search scoped to site:apnews.com, working around AP having no official RSS feed (see the AP/Reuters/AFP note above) while still getting AP's actual reporting, not a third-party summary of it. Tier 2, not 4 — the recall/reliability tradeoff that makes the general Google News entry above Tier 4 doesn't apply here, since every item is genuinely from apnews.com, Google is just the delivery mechanism. Labeled 'via Google News' in the name for honest attribution: entry links may route through a news.google.com redirect rather than a bare apnews.com URL — spot-check this on first live run. Not yet live-verified — confirm with scripts/verify_sources.py."
+  - name: "Reuters — via Google News"
+    url: "https://news.google.com/rss/search?q=site%3Areuters.com%20%28Israel%20OR%20Gaza%20OR%20Iran%20OR%20Lebanon%20OR%20Syria%20OR%20Yemen%20OR%20%22Middle%20East%22%29&hl=en-US&gl=US&ceid=US:en"
+    poll_interval_minutes: 60
+    tier: 2  # wire/agency — this IS Reuters' own content, just reached via Google's site: search since Reuters has no RSS of its own (see note above)
+    note: "Added 2026-07-31, same site: search-scoping approach as the AP entry above, for the same reason: Reuters' RSS has been dead since 2020 (see the spec-cited note above) but this reaches their actual reporting anyway. Same caveats apply — Tier 2 because it's genuinely Reuters content, spot-check whether entry links are bare reuters.com URLs or Google redirects on first live run. Not yet live-verified — confirm with scripts/verify_sources.py."
+  - name: "Axios — via Google News"
+    url: "https://news.google.com/rss/search?q=site%3Aaxios.com%20%28Israel%20OR%20Gaza%20OR%20Iran%20OR%20Lebanon%20OR%20Syria%20OR%20Yemen%20OR%20%22Middle%20East%22%29&hl=en-US&gl=US&ceid=US:en"
+    poll_interval_minutes: 60
+    tier: 2  # wire/agency (spec 5.1 names Axios as a Tier 2 example directly) — reached via Google's site: search since Axios has no Middle East-specific RSS vertical
+    note: "Added 2026-07-31. Axios does have its own general RSS feed, but no Middle East-specific one — this site:-scoped Google News query gets the ME-relevant subset directly rather than pulling Axios' full, mostly US-domestic-policy general feed and relying entirely on triage to filter it. Not yet live-verified — confirm with scripts/verify_sources.py."

@@ -127,20 +127,35 @@ laptop — a materially bigger change than a scheduler tweak.
   URLs resolve from your machine** with `scripts/verify_sources.py` before
   relying on them.
 
-Reuters, AP, and AFP — all three major global wire agencies — are
-deliberately excluded from `sources.yaml`: none maintains an official
-public RSS feed anymore. The spec explicitly calls this out for Reuters
-(retired in 2020); live checks on 2026-07-31 confirmed AP is in the same
-position (no first-party feed, only unofficial third-party scrapers), and
-so is AFP — AFP has stated its full public RSS is deliberately off,
-since a free feed would compete with its own paying syndication clients.
-This isn't a gap specific to any one agency, it's structural to how wire
-agencies distribute content now, and none of the three is a source this
-pipeline should depend on an unofficial scraper for. Wire content from all
-three still reaches the pipeline indirectly via GDELT's GKG layer. Tehran
-Times is included specifically because the spec calls it out as the
-source that makes the stated-vs-revealed-behavior divergence check
-actually checkable.
+Reuters, AP, and AFP — all three major global wire agencies — don't
+maintain an official public RSS feed anymore. The spec explicitly calls
+this out for Reuters (retired in 2020); live checks on 2026-07-31
+confirmed AP is in the same position (no first-party feed, only
+unofficial third-party scrapers), and so is AFP — AFP has stated its full
+public RSS is deliberately off, since a free feed would compete with its
+own paying syndication clients. This isn't a gap specific to any one
+agency, it's structural to how wire agencies distribute content now, and
+none of the three is a source this pipeline should depend on an
+unofficial *scraper* for. Tehran Times is included specifically because
+the spec calls it out as the source that makes the
+stated-vs-revealed-behavior divergence check actually checkable.
+
+**AP and Reuters are reached anyway**, via a different mechanism added
+2026-07-31: Google News RSS search scoped with `site:apnews.com` /
+`site:reuters.com` (`rss_feeds` entries "AP — via Google News" and
+"Reuters — via Google News", Tier 2). This isn't an unofficial scraper —
+it's Google's own search index, returning links to the outlet's actual
+articles — so it gets genuine AP/Reuters content without depending on
+either agency's (nonexistent) RSS infrastructure. Tagged Tier 2, the
+outlet's real tier, not Tier 4: every item genuinely is that outlet's own
+reporting, Google is just standing in as the delivery mechanism. Axios
+got the same treatment ("Axios — via Google News", Tier 2 — the spec
+names Axios as a Tier 2 example directly) even though Axios does publish
+a general RSS feed: it has no Middle East-specific vertical, so a
+`site:axios.com` query reaches the ME-relevant subset directly rather
+than pulling Axios' mostly US-domestic-policy general feed and relying
+entirely on triage to filter it. All three are wire content that would
+otherwise only reach the pipeline indirectly via GDELT's GKG layer.
 
 **International wire-style sources added 2026-07-31** (BBC News — Middle
 East, The Guardian — Middle East, NPR — Middle East, all Tier 2) to
@@ -185,11 +200,12 @@ RSS fetch/dedup/triage/`verify_sources.py` path every other feed uses — no
 special-case code needed, unlike LiveUAMap's old bespoke fetcher. Not yet
 live-verified from this build environment.
 
-Phase 1 runs on 10 sources total: GDELT, Times of Israel, Al Jazeera,
-Tehran Times, BBC, The Guardian, NPR, Al-Monitor, Haaretz, and the Google
-News search query (which also partially covers the "fastest-updating
-source" gap LiveUAMap was meant to fill, alongside GDELT's own rapid
-15-minute update cadence).
+Phase 1 runs on 13 sources total: GDELT, Times of Israel, Al Jazeera,
+Tehran Times, BBC, The Guardian, NPR, Al-Monitor, Haaretz, the general
+Google News search query (which also partially covers the
+"fastest-updating source" gap LiveUAMap was meant to fill, alongside
+GDELT's own rapid 15-minute update cadence), and the three site:-scoped
+Google News queries (AP, Reuters, Axios).
 
 ## The effort-tier substitution (read this if the numbers look off)
 
@@ -287,16 +303,22 @@ trusting daily use:**
 
 1. `python scripts/verify_sources.py` — confirm GDELT and all RSS feeds
    actually resolve and return current items from your network. **Done and
-   passing as of 2026-07-31** for 8 of the 9 RSS feeds (plus GDELT): Times
+   passing as of 2026-07-31** for 8 of the 12 RSS feeds (plus GDELT): Times
    of Israel, Al Jazeera, Tehran Times (verified 2026-07-23), plus BBC News
    — Middle East, NPR — Middle East, The Guardian — Middle East (its first
    URL guess 404'd, corrected to the unhyphenated tag slug, then confirmed
    live — see the live-run findings log below), Al-Monitor, and Haaretz
-   (all verified 2026-07-31). **Not yet verified**: the Google News —
-   Middle East query that replaced LiveUAMap (also added 2026-07-31) — a
-   `news.google.com/rss/search` URL built by hand, not fetched live from
-   this build environment, so re-run this script after pulling that change
-   and before trusting it. Re-run after any source config change.
+   (all verified 2026-07-31). **Not yet verified**: the general Google
+   News — Middle East query that replaced LiveUAMap, plus the three
+   `site:`-scoped Google News queries for AP, Reuters, and Axios (all
+   added 2026-07-31) — all four are `news.google.com/rss/search` URLs
+   built by hand, not fetched live from this build environment, so re-run
+   this script after pulling that change and before trusting them. Also
+   worth eyeballing on that first live run: whether these entries' item
+   links are bare outlet URLs (`apnews.com/...`) or Google redirect links
+   (`news.google.com/rss/articles/...`) — either works for the pipeline,
+   but it affects what a human clicking through from the briefing lands
+   on. Re-run after any source config change.
 2. A real end-to-end run: `ollama serve` (with `qwen2.5:14b` pulled) running
    in the background, then `python -m agents.middle_east.run` with a real
    `ANTHROPIC_API_KEY` in `.env`. Check that:
