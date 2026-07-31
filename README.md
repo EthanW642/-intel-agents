@@ -199,7 +199,7 @@ requiring live network access to those specific services could be run here.
 Hugging Face (for the dedup/Chroma embedding model) and PyPI *were*
 reachable, which is documented per-item below rather than assumed.
 
-**Verified in this environment** (`python -m pytest tests/` — 83 tests,
+**Verified in this environment** (`python -m pytest tests/` — 96 tests,
 all passing; also `python -m py_compile` on every file and a plain import
 of every module):
 - Dedup clustering math (against a fake embedder — the real
@@ -213,6 +213,11 @@ of every module):
 - Cost estimation math (intro vs. standard pricing).
 - The Sonnet prompt-building logic, including the cold-start flag and
   track-record inclusion/omission.
+- The Sonnet call's retry-once-after-60s behavior on genuinely retryable
+  errors (connection/timeout, 429, 500, 529 overloaded) and that it does
+  *not* retry non-retryable errors (e.g. 400 bad request) or retry more
+  than once — see finding #13 in the live-run findings log below. The
+  Anthropic client itself is mocked; no real API call is made.
 - The JSON write-back extraction, including the 2-independent-event bar
   enforcement for new theses (rejects a thesis backed by <2 distinct
   events, including a duplicate-citation attempt) and the thesis dormancy
@@ -482,6 +487,40 @@ trusting daily use:**
          itself again as the memory store keeps growing. Locked in with
          `tests/test_analyze.py::test_effort_never_reaches_max` (asserts
          the cap holds even at absurdly extreme inputs).
+     13. **A transient Anthropic-side 529 overload threw away a whole
+         run's already-completed free local work.** A real run on
+         2026-07-29 got through ~10 minutes of ingest/dedup/triage/
+         prediction-resolution (all free, local) and then the Sonnet call
+         — the pipeline's only paid, only network-dependent-on-Anthropic
+         stage — failed with `{'type': 'overloaded_error', 'message':
+         'Overloaded'}` (HTTP 529: Anthropic's own servers at capacity,
+         not a bug on this end). The Anthropic SDK already retries 429/5xx
+         internally (`max_retries=2`, short backoff) before raising, so by
+         the time this surfaced here those quick retries were already
+         exhausted, and the whole pipeline aborted, discarding all the
+         completed local stages with it. Fixed: wrapped just the Sonnet
+         call in `pipeline/analyze.py` with a retry-once-after-a-longer-
+         delay (60s, vs. `pipeline/deliver.py`'s 30s for SMTP — an API
+         overload plausibly takes longer to clear than an SMTP hiccup),
+         scoped to genuinely retryable errors only
+         (`APIConnectionError`/`APITimeoutError`, `RateLimitError`,
+         `InternalServerError`, `OverloadedError`) — a 400/401/403/404/
+         413/422 means the request itself is wrong (bad prompt, bad key,
+         oversized input) and retrying would just waste 60s reproducing
+         the same failure. If the retry also fails, the error still
+         propagates to `run.py`'s existing outer handler (same as before —
+         this doesn't hide a genuine, sustained outage), it just gives one
+         real overload a chance to clear before giving up on ~10 minutes
+         of local work. Covered by
+         `tests/test_analyze.py::test_run_analysis_retries_once_after_overloaded_error`
+         (mocked: fails once, succeeds on retry),
+         `::test_run_analysis_does_not_retry_forever_when_second_attempt_also_fails`
+         (fails twice, propagates rather than looping), and
+         `::test_run_analysis_does_not_retry_non_retryable_errors` (a 400
+         is not retried at all). Not yet confirmed live against a real
+         second overload — the next time this fires for real, check
+         `data/run_log.csv` and the logs for the "retrying once in 60s"
+         line.
 
      **First full clean run confirmed (2026-07-24):** cold-start handling
      ("no established pattern yet," not fabricated continuity), source

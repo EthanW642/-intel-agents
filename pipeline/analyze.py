@@ -9,6 +9,7 @@ import csv
 import json
 import logging
 import re
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -18,6 +19,27 @@ logger = logging.getLogger(__name__)
 
 ANALYSIS_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "analysis_system.md"
 COST_LOG_PATH = Path(__file__).parent.parent / "data" / "api_cost_log.csv"
+
+# Confirmed live 2026-07-29: a genuine `overloaded_error` (529, Anthropic's
+# own servers at capacity) crashed a run at this, the pipeline's only paid
+# stage, discarding ~10 minutes of already-completed free local work
+# (ingest/dedup/triage/prediction-resolution). The Anthropic SDK already
+# retries 429/5xx internally (default `max_retries=2`, short backoff) before
+# raising, so by the time this surfaces here the quick retries are already
+# exhausted -- a real overload can still be in effect seconds later, so this
+# outer retry waits much longer (60s, vs. deliver.py's 30s for SMTP) before
+# trying once more. Only genuinely retryable, server/transport-side errors
+# are covered here; a 400/401/403/404/413/422 means something is wrong with
+# the request itself (bad prompt, bad key, oversized input) and retrying
+# would just waste another 60s reproducing the same failure.
+ANALYSIS_RETRY_DELAY_SECONDS = 60
+
+RETRYABLE_ANALYSIS_ERRORS = (
+    anthropic.APIConnectionError,  # includes APITimeoutError
+    anthropic.RateLimitError,  # 429
+    anthropic.InternalServerError,  # 500 and other undifferentiated 5xx
+    anthropic.OverloadedError,  # 529 -- the actual live failure this covers
+)
 
 # Sonnet 5 pricing per spec section 2: introductory $2/$10 per MTok through
 # 2026-08-31, reverting to standard $3/$15 after.
@@ -178,15 +200,28 @@ def run_analysis(
     system_prompt = _load_system_prompt()
     user_prompt = _build_user_prompt(triaged_items, memory_context)
 
-    with client.messages.stream(
-        model=model,
-        max_tokens=max_tokens,
-        thinking={"type": "adaptive", "display": "summarized"},
-        output_config={"effort": effort},
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_prompt}],
-    ) as stream:
-        response = stream.get_final_message()
+    def _call() -> anthropic.types.Message:
+        with client.messages.stream(
+            model=model,
+            max_tokens=max_tokens,
+            thinking={"type": "adaptive", "display": "summarized"},
+            output_config={"effort": effort},
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        ) as stream:
+            return stream.get_final_message()
+
+    try:
+        response = _call()
+    except RETRYABLE_ANALYSIS_ERRORS as first_error:
+        logger.warning(
+            "Analysis call failed (%s), retrying once in %ds: %s",
+            type(first_error).__name__,
+            ANALYSIS_RETRY_DELAY_SECONDS,
+            first_error,
+        )
+        time.sleep(ANALYSIS_RETRY_DELAY_SECONDS)
+        response = _call()
 
     text = "".join(block.text for block in response.content if block.type == "text")
     write_back = _extract_json_block(text)

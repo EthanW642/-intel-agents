@@ -1,4 +1,11 @@
-from pipeline.analyze import _build_user_prompt, _estimate_cost, _extract_json_block, compute_effort, _current_rates
+from unittest.mock import MagicMock
+
+import anthropic
+import httpx
+import pytest
+
+from pipeline import analyze as analyze_module
+from pipeline.analyze import _build_user_prompt, _estimate_cost, _extract_json_block, compute_effort, _current_rates, run_analysis
 
 CFG = {
     "effort_low_max_load": 8,
@@ -6,6 +13,135 @@ CFG = {
     "xhigh_min_triaged_items": 20,
     "xhigh_min_active_theses": 1,
 }
+
+MEMORY_CONTEXT = {
+    "active_theses": [],
+    "entity_graph": [],
+    "related_past_events": [],
+    "track_record_summary": None,
+}
+
+
+def _fake_overloaded_error() -> anthropic.OverloadedError:
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    body = {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}
+    response = httpx.Response(529, request=request, json=body)
+    return anthropic.OverloadedError("Overloaded", response=response, body=body)
+
+
+def _fake_bad_request_error() -> anthropic.BadRequestError:
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    body = {"type": "error", "error": {"type": "invalid_request_error", "message": "bad prompt"}}
+    response = httpx.Response(400, request=request, json=body)
+    return anthropic.BadRequestError("bad prompt", response=response, body=body)
+
+
+def _fake_message() -> MagicMock:
+    message = MagicMock()
+    message.content = [
+        MagicMock(
+            type="text",
+            text='```json\n{"new_entities": [], "new_relationships": [], "new_events": [], '
+            '"thesis_updates": [], "new_predictions": []}\n```',
+        )
+    ]
+    message.usage.input_tokens = 100
+    message.usage.output_tokens = 50
+    return message
+
+
+class _FakeStreamCtx:
+    def __init__(self, message=None, error=None):
+        self._message = message
+        self._error = error
+
+    def __enter__(self):
+        if self._error is not None:
+            raise self._error
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def get_final_message(self):
+        return self._message
+
+
+def test_run_analysis_retries_once_after_overloaded_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(analyze_module, "COST_LOG_PATH", tmp_path / "api_cost_log.csv")
+    message = _fake_message()
+    calls = [_FakeStreamCtx(error=_fake_overloaded_error()), _FakeStreamCtx(message=message)]
+    sleep_mock = MagicMock()
+    fake_client = MagicMock()
+    fake_client.messages.stream.side_effect = lambda **kwargs: calls.pop(0)
+    monkeypatch.setattr(analyze_module.anthropic, "Anthropic", lambda **kwargs: fake_client)
+    monkeypatch.setattr(analyze_module.time, "sleep", sleep_mock)
+
+    result = run_analysis(
+        triaged_items=[],
+        memory_context=MEMORY_CONTEXT,
+        domain="middle_east",
+        model="claude-sonnet-5",
+        max_tokens=128000,
+        pipeline_cfg=CFG,
+        api_key="fake-key",
+    )
+
+    assert fake_client.messages.stream.call_count == 2
+    sleep_mock.assert_called_once_with(analyze_module.ANALYSIS_RETRY_DELAY_SECONDS)
+    assert result["write_back"]["new_entities"] == []
+
+
+def test_run_analysis_does_not_retry_forever_when_second_attempt_also_fails(monkeypatch, tmp_path):
+    # Regression guard: the retry is once-and-propagate (matching
+    # deliver.py's retry-once pattern), not an unbounded loop -- a second
+    # consecutive overload should surface to the caller (run.py's outer
+    # `except Exception`), not silently hang or swallow the error.
+    monkeypatch.setattr(analyze_module, "COST_LOG_PATH", tmp_path / "api_cost_log.csv")
+    calls = [_FakeStreamCtx(error=_fake_overloaded_error()), _FakeStreamCtx(error=_fake_overloaded_error())]
+    fake_client = MagicMock()
+    fake_client.messages.stream.side_effect = lambda **kwargs: calls.pop(0)
+    monkeypatch.setattr(analyze_module.anthropic, "Anthropic", lambda **kwargs: fake_client)
+    monkeypatch.setattr(analyze_module.time, "sleep", MagicMock())
+
+    with pytest.raises(anthropic.OverloadedError):
+        run_analysis(
+            triaged_items=[],
+            memory_context=MEMORY_CONTEXT,
+            domain="middle_east",
+            model="claude-sonnet-5",
+            max_tokens=128000,
+            pipeline_cfg=CFG,
+            api_key="fake-key",
+        )
+
+    assert fake_client.messages.stream.call_count == 2
+
+
+def test_run_analysis_does_not_retry_non_retryable_errors(monkeypatch, tmp_path):
+    # A 400 bad-request means the request itself is malformed -- retrying
+    # would just reproduce the same failure after a wasted 60s wait.
+    monkeypatch.setattr(analyze_module, "COST_LOG_PATH", tmp_path / "api_cost_log.csv")
+    calls = [_FakeStreamCtx(error=_fake_bad_request_error())]
+    fake_client = MagicMock()
+    fake_client.messages.stream.side_effect = lambda **kwargs: calls.pop(0)
+    monkeypatch.setattr(analyze_module.anthropic, "Anthropic", lambda **kwargs: fake_client)
+    sleep_mock = MagicMock()
+    monkeypatch.setattr(analyze_module.time, "sleep", sleep_mock)
+
+    with pytest.raises(anthropic.BadRequestError):
+        run_analysis(
+            triaged_items=[],
+            memory_context=MEMORY_CONTEXT,
+            domain="middle_east",
+            model="claude-sonnet-5",
+            max_tokens=128000,
+            pipeline_cfg=CFG,
+            api_key="fake-key",
+        )
+
+    assert fake_client.messages.stream.call_count == 1
+    sleep_mock.assert_not_called()
 
 
 def test_effort_low_on_quiet_day():
