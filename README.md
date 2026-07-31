@@ -127,22 +127,33 @@ laptop — a materially bigger change than a scheduler tweak.
   **Verify these URLs resolve from your machine** with
   `scripts/verify_sources.py` before relying on them.
 
-Reuters and AP are both deliberately excluded from `sources.yaml` — neither
-maintains an official public RSS feed anymore (the spec explicitly calls
-this out for Reuters, retired in 2020; a live check on 2026-07-31 confirmed
-AP is in the same position — no first-party feed, only unofficial
-third-party scrapers). Wire content from both still reaches the pipeline
-indirectly via GDELT's GKG layer. Tehran Times is included specifically
-because the spec calls it out as the source that makes the
-stated-vs-revealed-behavior divergence check actually checkable.
+Reuters, AP, and AFP — all three major global wire agencies — are
+deliberately excluded from `sources.yaml`: none maintains an official
+public RSS feed anymore. The spec explicitly calls this out for Reuters
+(retired in 2020); live checks on 2026-07-31 confirmed AP is in the same
+position (no first-party feed, only unofficial third-party scrapers), and
+so is AFP — AFP has stated its full public RSS is deliberately off,
+since a free feed would compete with its own paying syndication clients.
+This isn't a gap specific to any one agency, it's structural to how wire
+agencies distribute content now, and none of the three is a source this
+pipeline should depend on an unofficial scraper for. Wire content from all
+three still reaches the pipeline indirectly via GDELT's GKG layer. Tehran
+Times is included specifically because the spec calls it out as the
+source that makes the stated-vs-revealed-behavior divergence check
+actually checkable.
 
 **International wire-style sources added 2026-07-31** (BBC News — Middle
-East, France 24 — Middle East, NPR — Middle East, all Tier 2) to balance
-the two Tier 3 aligned/interpretive sources already in the file (Times of
-Israel, Tehran Times) with outlets that aren't a party to the conflict
-themselves. **Verified live 2026-07-31** via `scripts/verify_sources.py`
-on real network access: all three resolved (BBC 30 entries, France 24 30
-entries, NPR 10 entries, all same-day).
+East, The Guardian — Middle East, NPR — Middle East, all Tier 2) to
+balance the two Tier 3 aligned/interpretive sources already in the file
+(Times of Israel, Tehran Times) with outlets that aren't a party to the
+conflict themselves. France 24 was the initial pick here but was swapped
+for The Guardian the same day, per explicit preference for a source
+closer to Reuters/AP than a state-funded broadcaster — The Guardian is
+independently owned (Scott Trust), not government-funded like
+BBC/France 24/NPR. **Verified live 2026-07-31**: BBC and NPR confirmed via
+`scripts/verify_sources.py` on real network access (BBC 30 entries, NPR 10
+entries, both same-day); The Guardian has not yet been live-verified —
+re-run the script after pulling this change.
 
 **LiveUAMap is currently disabled** (`liveuamap.enabled: false` in
 `sources.yaml`) — confirmed live (2026-07-23) that its free `/rss` route
@@ -155,7 +166,7 @@ re-enable: get a LiveUAMap API key/endpoint, update `feed_url` (and
 whatever auth the paid tier needs — the current fetcher assumes a plain
 RSS GET), flip `enabled: true`, and re-run `scripts/verify_sources.py`.
 Phase 1 runs on the remaining 8 sources (GDELT, Times of Israel, Al
-Jazeera, Tehran Times, BBC, France 24, NPR, plus GDELT's own rapid
+Jazeera, Tehran Times, BBC, The Guardian, NPR, plus GDELT's own rapid
 15-minute update cadence partially covering the "fastest-updating source"
 gap LiveUAMap was meant to fill).
 
@@ -255,14 +266,15 @@ trusting daily use:**
 
 1. `python scripts/verify_sources.py` — confirm GDELT and all RSS feeds
    actually resolve and return current items from your network. **Done and
-   passing as of 2026-07-31**, all 7 checked sources OK: GDELT, Times of
-   Israel, Al Jazeera, Tehran Times (verified 2026-07-23), plus BBC News —
-   Middle East, France 24 — Middle East, and NPR — Middle East (verified
-   2026-07-31, added the same day since their URLs came from a web search
-   rather than a live fetch from this build environment). LiveUAMap
-   confirmed dead (redirects to a paid-API promo page) and is now disabled
-   in `sources.yaml` — see the Configuration section above. Re-run after
-   any source config change.
+   passing as of 2026-07-31** for 6 of the 7 current sources: GDELT, Times
+   of Israel, Al Jazeera, Tehran Times (verified 2026-07-23), plus BBC News
+   — Middle East and NPR — Middle East (verified 2026-07-31). **Not yet
+   verified**: The Guardian — Middle East, swapped in for France 24 the
+   same day — its URL came from a web search, not a live fetch from this
+   build environment, so re-run this script after pulling that change and
+   before trusting it. LiveUAMap confirmed dead (redirects to a paid-API
+   promo page) and is now disabled in `sources.yaml` — see the
+   Configuration section above. Re-run after any source config change.
 2. A real end-to-end run: `ollama serve` (with `qwen2.5:14b` pulled) running
    in the background, then `python -m agents.middle_east.run` with a real
    `ANTHROPIC_API_KEY` in `.env`. Check that:

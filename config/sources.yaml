@@ -118,7 +118,7 @@ rss_feeds:
   #     instructed (prompts/analysis_system.md, source reliability tiering)
   #     to attribute interpretive claims from these to the source, never
   #     state them as neutral fact.
-  #   - Tier 2 "wire/agency" (Al Jazeera, BBC, France 24, NPR): broad
+  #   - Tier 2 "wire/agency" (Al Jazeera, BBC, The Guardian, NPR): broad
   #     international outlets not aligned to a single regional party to
   #     the conflict, added 2026-07-31 per explicit request for
   #     international/"unbiased" coverage to balance the two aligned
@@ -127,14 +127,21 @@ rss_feeds:
   #     the conflict the way Times of Israel/Tehran Times are, which is
   #     the specific gap being filled here.
   #
-  # AP and Reuters are BOTH deliberately excluded, for the same underlying
-  # reason: neither maintains an official public RSS feed anymore. The
-  # spec already calls this out for Reuters ("discontinued public RSS
-  # feeds in 2020 — do not use a Reuters RSS source"); a live check
-  # 2026-07-31 confirmed AP is in the same position — no first-party feed,
-  # only unofficial third-party scrapers/generators, which aren't a source
-  # this pipeline should depend on for wire content. Both are still
-  # captured indirectly via GDELT's GKG layer, same as before.
+  # Reuters, AP, AND AFP — all three major global wire agencies — are
+  # deliberately excluded, for the same underlying reason: none maintains
+  # an official public RSS feed anymore. The spec already calls this out
+  # for Reuters ("discontinued public RSS feeds in 2020 — do not use a
+  # Reuters RSS source"); live checks on 2026-07-31 confirmed AP is in the
+  # same position (no first-party feed, only unofficial third-party
+  # scrapers/generators), and AFP too — AFP has stated its full RSS is off
+  # deliberately, since a free public feed would compete with its own
+  # paying syndication clients. This isn't specific to any one agency,
+  # it's how wire agencies distribute content now; none of the three are a
+  # source this pipeline should depend on an unofficial scraper for. All
+  # three are still captured indirectly via GDELT's GKG layer, same as
+  # before. The Guardian was added in their place as the closest available
+  # substitute: independently owned (Scott Trust, not government-funded,
+  # unlike BBC/France 24/NPR/VOA), with a confirmed official RSS feed.
   - name: "Times of Israel"
     url: "https://www.timesofisrael.com/feed/"
     poll_interval_minutes: 60
@@ -154,11 +161,11 @@ rss_feeds:
     poll_interval_minutes: 60
     tier: 2  # wire/agency — UK public broadcaster, ME-specific section, not a party to the conflict
     note: "Verified live 2026-07-31: 30 entries, newest same-day."
-  - name: "France 24 — Middle East"
-    url: "https://www.france24.com/en/middle-east/rss"
+  - name: "The Guardian — Middle East"
+    url: "https://www.theguardian.com/world/middle-east/rss"
     poll_interval_minutes: 60
-    tier: 2  # wire/agency — French state-funded international broadcaster, ME-specific vertical
-    note: "Verified live 2026-07-31: 30 entries, newest same-day. French state funding is disclosed here for the same transparency reason Tehran Times' state alignment is noted, even though France 24's ME coverage isn't a party to this specific conflict the way Tehran Times is."
+    tier: 2  # wire/agency — independently owned (Scott Trust, not government-funded), ME-specific section
+    note: "Swapped in for France 24 2026-07-31 per explicit preference for a source closer to Reuters/AP than a state-funded broadcaster — independent ownership was the deciding factor. Not yet live-verified from a real network — confirm with scripts/verify_sources.py before trusting it (URL uses the Guardian's standard long-standing <section>/rss convention but hasn't been fetched live for this repo)."
   - name: "NPR — Middle East"
     url: "https://feeds.npr.org/1009/rss.xml"
     poll_interval_minutes: 60
