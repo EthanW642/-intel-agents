@@ -164,8 +164,8 @@ counterpart: known for reporting critical of the Israeli government,
 capturing internal Israeli dissent that Times of Israel's more mainstream
 framing doesn't; still Tier 3 because nationality/proximity to a party in
 the conflict drives the tier, not the paper's stance toward its own
-government). **Not yet live-verified** — run `scripts/verify_sources.py`
-after pulling this change.
+government). **Verified live 2026-07-31**: both resolved on the first URL
+guess (Al-Monitor 20 entries, Haaretz 20 entries, both same-day).
 
 **LiveUAMap is currently disabled** (`liveuamap.enabled: false` in
 `sources.yaml`) — confirmed live (2026-07-23) that its free `/rss` route
@@ -278,19 +278,14 @@ trusting daily use:**
 
 1. `python scripts/verify_sources.py` — confirm GDELT and all RSS feeds
    actually resolve and return current items from your network. **Done and
-   passing as of 2026-07-31** for 7 of the 9 current sources: GDELT, Times
-   of Israel, Al Jazeera, Tehran Times (verified 2026-07-23), plus BBC News
-   — Middle East, NPR — Middle East, and The Guardian — Middle East
-   (verified 2026-07-31 — the Guardian's first URL guess 404'd, corrected
-   to the unhyphenated tag slug, then confirmed live; see the live-run
-   findings log below). **Not yet verified**: Al-Monitor and Haaretz,
-   added 2026-07-31 — both spec-named candidates that were never
-   previously wired in, their URLs came from a web search rather than a
-   live fetch from this build environment, so re-run this script after
-   pulling that change and before trusting them. LiveUAMap confirmed dead
-   (redirects to a paid-API promo page) and is now disabled in
-   `sources.yaml` — see the Configuration section above. Re-run after any
-   source config change.
+   passing as of 2026-07-31, all 9 current sources OK**: GDELT, Times of
+   Israel, Al Jazeera, Tehran Times (verified 2026-07-23), plus BBC News —
+   Middle East, NPR — Middle East, The Guardian — Middle East (its first
+   URL guess 404'd, corrected to the unhyphenated tag slug, then confirmed
+   live — see the live-run findings log below), Al-Monitor, and Haaretz
+   (all verified 2026-07-31). LiveUAMap confirmed dead (redirects to a
+   paid-API promo page) and is now disabled in `sources.yaml` — see the
+   Configuration section above. Re-run after any source config change.
 2. A real end-to-end run: `ollama serve` (with `qwen2.5:14b` pulled) running
    in the background, then `python -m agents.middle_east.run` with a real
    `ANTHROPIC_API_KEY` in `.env`. Check that:
