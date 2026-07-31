@@ -197,8 +197,8 @@ aggregates across a large, uncurated set of publishers in near-real time,
 which is the same high-recall/low-individual-reliability role LiveUAMap
 held, not just a topical similarity. It slots into the exact same generic
 RSS fetch/dedup/triage/`verify_sources.py` path every other feed uses — no
-special-case code needed, unlike LiveUAMap's old bespoke fetcher. Not yet
-live-verified from this build environment.
+special-case code needed, unlike LiveUAMap's old bespoke fetcher.
+**Verified live 2026-07-31**: 100 entries, newest same-day.
 
 Phase 1 runs on 13 sources total: GDELT, Times of Israel, Al Jazeera,
 Tehran Times, BBC, The Guardian, NPR, Al-Monitor, Haaretz, the general
@@ -303,22 +303,23 @@ trusting daily use:**
 
 1. `python scripts/verify_sources.py` — confirm GDELT and all RSS feeds
    actually resolve and return current items from your network. **Done and
-   passing as of 2026-07-31** for 8 of the 12 RSS feeds (plus GDELT): Times
-   of Israel, Al Jazeera, Tehran Times (verified 2026-07-23), plus BBC News
-   — Middle East, NPR — Middle East, The Guardian — Middle East (its first
-   URL guess 404'd, corrected to the unhyphenated tag slug, then confirmed
-   live — see the live-run findings log below), Al-Monitor, and Haaretz
-   (all verified 2026-07-31). **Not yet verified**: the general Google
-   News — Middle East query that replaced LiveUAMap, plus the three
-   `site:`-scoped Google News queries for AP, Reuters, and Axios (all
-   added 2026-07-31) — all four are `news.google.com/rss/search` URLs
-   built by hand, not fetched live from this build environment, so re-run
-   this script after pulling that change and before trusting them. Also
-   worth eyeballing on that first live run: whether these entries' item
-   links are bare outlet URLs (`apnews.com/...`) or Google redirect links
+   passing as of 2026-07-31, all 13 sources OK**: GDELT, Times of Israel,
+   Al Jazeera, Tehran Times (verified 2026-07-23), plus BBC News — Middle
+   East, NPR — Middle East, The Guardian — Middle East (its first URL
+   guess 404'd, corrected to the unhyphenated tag slug, then confirmed
+   live — see the live-run findings log below), Al-Monitor, Haaretz, the
+   general "Google News — Middle East" query that replaced LiveUAMap, and
+   the three `site:`-scoped Google News queries for AP, Reuters, and Axios
+   (this whole batch verified 2026-07-31). All four Google News-based
+   entries returned exactly 100 entries each — looks like Google News
+   RSS's per-request page cap, not a config problem, but worth watching
+   whether it caps real coverage on a heavy-news day. Still unconfirmed:
+   whether these entries' item links are bare outlet URLs
+   (`apnews.com/...`) or Google redirect links
    (`news.google.com/rss/articles/...`) — either works for the pipeline,
    but it affects what a human clicking through from the briefing lands
-   on. Re-run after any source config change.
+   on; check a rendered briefing once real items flow through. Re-run
+   after any source config change.
 2. A real end-to-end run: `ollama serve` (with `qwen2.5:14b` pulled) running
    in the background, then `python -m agents.middle_east.run` with a real
    `ANTHROPIC_API_KEY` in `.env`. Check that:
