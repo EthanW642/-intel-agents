@@ -133,7 +133,40 @@ def _format_oil_snapshot(oil_snapshot: dict | None) -> str:
     return "## Oil price snapshot (EIA spot prices)\n" + "\n".join(lines) + "\n\n"
 
 
-def _build_user_prompt(triaged_items: list, memory_context: dict, oil_snapshot: dict | None = None) -> str:
+def _format_hotspots_section(hotspots: list[dict] | None) -> str:
+    """Renders NASA FIRMS satellite thermal-anomaly detections
+    (pipeline/satellite_hotspots.py) as a prompt section. Deliberately
+    unfiltered beyond FIRMS' own confidence field — see that module's
+    docstring for why suppressing "noise" (gas flares, wildfires) here
+    isn't the right call. The caveat text below carries the actual
+    corroboration-required instruction; the Tier 1 tiering rule in the
+    system prompt reinforces it. Omitted entirely when unavailable, same
+    pattern as the oil snapshot."""
+    if not hotspots:
+        return ""
+    lines = [
+        f"- {h['lat']:.2f}, {h['lon']:.2f} — {h['satellite']}, {h['confidence']} confidence, "
+        f"FRP {h['frp_mw']:.1f}MW, {h['date']} {h['time']} UTC" if h["frp_mw"] is not None else
+        f"- {h['lat']:.2f}, {h['lon']:.2f} — {h['satellite']}, {h['confidence']} confidence, {h['date']} {h['time']} UTC"
+        for h in hotspots
+    ]
+    return (
+        "## Satellite thermal anomalies (NASA FIRMS, unconfirmed)\n"
+        + "\n".join(lines)
+        + "\n\nNOTE: heat signatures only — may be strikes, fires, gas flares, or "
+        "agricultural burning. This region includes major gas-flaring infrastructure "
+        "(Iraq, Gulf states) that will show up here routinely. Corroborate against "
+        "news reporting before treating any single detection as a confirmed strike; "
+        "a detection with no corroborating Tier 1/2 report stays Speculation, not Fact.\n\n"
+    )
+
+
+def _build_user_prompt(
+    triaged_items: list,
+    memory_context: dict,
+    oil_snapshot: dict | None = None,
+    hotspots: list[dict] | None = None,
+) -> str:
     items_block = "\n".join(
         f"- [{item.source} (Tier {item.raw_metadata.get('tier', '?')}), {item.published}] {item.title}\n"
         f"  excerpt: {item.text[:500]}\n"
@@ -173,6 +206,7 @@ def _build_user_prompt(triaged_items: list, memory_context: dict, oil_snapshot: 
     )
 
     oil_block = _format_oil_snapshot(oil_snapshot)
+    hotspots_block = _format_hotspots_section(hotspots)
 
     return (
         f"{memory_status}\n\n"
@@ -181,6 +215,7 @@ def _build_user_prompt(triaged_items: list, memory_context: dict, oil_snapshot: 
         f"## Tracked entity graph\n{entities_block}\n\n"
         f"## Retrieved related past events\n{related_block}\n\n"
         f"{oil_block}"
+        f"{hotspots_block}"
         f"{track_record_block}"
     )
 
@@ -224,6 +259,7 @@ def run_analysis(
     pipeline_cfg: dict,
     api_key: str | None = None,
     oil_snapshot: dict | None = None,
+    hotspots: list[dict] | None = None,
 ) -> dict:
     """Single Sonnet call with adaptive thinking, scaled effort. Returns
     {"markdown": full response text, "write_back": parsed JSON block,
@@ -233,7 +269,7 @@ def run_analysis(
     effort = compute_effort(len(triaged_items), len(memory_context["active_theses"]), pipeline_cfg)
 
     system_prompt = _load_system_prompt()
-    user_prompt = _build_user_prompt(triaged_items, memory_context, oil_snapshot)
+    user_prompt = _build_user_prompt(triaged_items, memory_context, oil_snapshot, hotspots)
 
     def _call() -> anthropic.types.Message:
         with client.messages.stream(

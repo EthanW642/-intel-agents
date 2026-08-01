@@ -13,6 +13,7 @@ Stage 2b TRIAGE          pipeline/triage.py                         local Ollama
 Stage 2c PREDICTION RES. pipeline/predictions.py                    local Ollama — checks pending predictions, no API call
 Stage 3  MEMORY QUERY    pipeline/memory.py                         Chroma + SQLite; dormancy sweep, track record
 Stage 3b OIL SNAPSHOT    pipeline/oil_prices.py                     EIA API — WTI/Brent spot prices, free, optional
+Stage 3c SATELLITE HOTSPOTS pipeline/satellite_hotspots.py          NASA FIRMS — thermal anomalies, free, optional
 Stage 4  DEEP ANALYSIS   pipeline/analyze.py                        Claude Sonnet 5, adaptive thinking — the ONLY API call
 Stage 5  WRITE-BACK      pipeline/memory.py, pipeline/render.py,    SQLite/Chroma write-back, Markdown briefing,
          + DELIVERY      pipeline/deliver.py                        Gmail SMTP delivery
@@ -27,7 +28,7 @@ Requires Python 3.11+ and [Ollama](https://ollama.com) installed locally with
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in ANTHROPIC_API_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, EIA_API_KEY
+cp .env.example .env   # fill in ANTHROPIC_API_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, EIA_API_KEY, FIRMS_MAP_KEY
 ```
 
 Make sure Ollama is running (`ollama serve`, or the background service) before
@@ -44,6 +45,15 @@ For the oil price snapshot (optional, added 2026-07-31): register for a free
 EIA API key at [eia.gov/opendata/register.php](https://www.eia.gov/opendata/register.php)
 (no credit card) and set `EIA_API_KEY`. If unset, the pipeline still runs
 normally — it just omits the oil snapshot section from the analysis prompt.
+
+For satellite thermal-anomaly detection (optional, added 2026-07-31):
+register for a free NASA FIRMS key at
+[firms.modaps.eosdis.nasa.gov/api/map_key](https://firms.modaps.eosdis.nasa.gov/api/map_key/)
+(no credit card) and set `FIRMS_MAP_KEY`. If unset, the pipeline still runs
+normally — it just omits the hotspots section. **Read the caveat in
+`pipeline/satellite_hotspots.py`'s module docstring before trusting this**:
+it detects heat, not confirmed strikes, and this region's routine gas
+flaring will show up in it constantly.
 
 ## Running
 
@@ -158,6 +168,21 @@ laptop — a materially bigger change than a scheduler tweak.
   (network-restricted sandbox, same as every other external source here)
   — the EIA API v2 query-parameter shape was built from published
   documentation, not a live response. See the live-run findings log below.
+- `pipeline/satellite_hotspots.py` — NASA FIRMS satellite thermal-anomaly
+  fetcher (added 2026-07-31), answering "where are strikes hitting" with
+  real sensor data instead of relying on prose descriptions in articles.
+  Requires `FIRMS_MAP_KEY` (free, see Setup above) — omitted from the
+  prompt entirely if unset or the fetch fails. **Read the module's own
+  docstring before trusting this**: FIRMS detects heat, not confirmed
+  strikes specifically, and this region's routine gas flaring (Iraq, Gulf
+  states) will show up constantly. Deliberately unfiltered beyond FIRMS'
+  own confidence field — the prompt carries an explicit
+  corroboration-required caveat instead of the pipeline trying to
+  locally suppress "noise," matching how GDELT's inherent noisiness is
+  already handled by the tiering/corroboration rules rather than local
+  filtering. Not yet confirmed live from this build environment — the
+  FIRMS area-CSV query shape was built from published documentation, not
+  a live response. See the live-run findings log below.
 
 Reuters, AP, and AFP — all three major global wire agencies — don't
 maintain an official public RSS feed anymore. The spec explicitly calls
@@ -290,7 +315,7 @@ requiring live network access to those specific services could be run here.
 Hugging Face (for the dedup/Chroma embedding model) and PyPI *were*
 reachable, which is documented per-item below rather than assumed.
 
-**Verified in this environment** (`python -m pytest tests/` — 108 tests,
+**Verified in this environment** (`python -m pytest tests/` — 121 tests,
 all passing; also `python -m py_compile` on every file and a plain import
 of every module):
 - Dedup clustering math (against a fake embedder — the real
@@ -303,10 +328,15 @@ of every module):
   including the "high is a cap, escalation needs both gates" behavior.
 - Cost estimation math (intro vs. standard pricing).
 - The Sonnet prompt-building logic, including the cold-start flag,
-  track-record inclusion/omission, and oil-snapshot inclusion/omission
+  track-record inclusion/omission, oil-snapshot inclusion/omission
   (present with real numbers, omitted entirely when `None`, missing
   1-day/7-day change values rendered as "no comparison available" rather
-  than crashing on `None` arithmetic).
+  than crashing on `None` arithmetic), and satellite-hotspot
+  inclusion/omission (present with lat/lon/confidence/FRP, omitted
+  entirely when `None`, the corroboration-required caveat text always
+  present when hotspots appear — regression-guarded so a future edit
+  can't silently drop it, missing FRP rendered without a dangling "FRP"
+  label rather than crashing).
 - The EIA oil price fetcher (`pipeline/oil_prices.py`): successful
   fetch/parse for both WTI and Brent, one series failing while the other
   still returns, both series failing returns `None` (prompt section
@@ -314,6 +344,15 @@ of every module):
   rather than raising, and the 7-day lookback correctly picks the closest
   available trading day rather than requiring an exact calendar match —
   all against a mocked `httpx.get`, no real EIA API call made.
+- The NASA FIRMS satellite hotspot fetcher
+  (`pipeline/satellite_hotspots.py`): successful CSV fetch/parse, "low"
+  confidence rows excluded while nominal/high pass through, results
+  sorted most-recent-first, results capped at `MAX_HOTSPOTS`, an
+  HTTP-level failure or error status returns `None` (not a crashed run),
+  malformed rows (non-numeric latitude) skipped rather than raising, and
+  a response where every row gets filtered out correctly returns `None`
+  rather than an empty-but-truthy list — all against a mocked
+  `httpx.get`, no real FIRMS API call made.
 - The Sonnet call's retry-once-after-60s behavior on genuinely retryable
   errors (connection/timeout, 429, 500, 529 overloaded) and that it does
   *not* retry non-retryable errors (e.g. 400 bad request) or retry more
@@ -734,6 +773,35 @@ trusting daily use:**
          sandbox can't reach external APIs — get an `EIA_API_KEY`, run
          the pipeline, and check whether the "Oil price snapshot" section
          actually appears with real numbers before trusting it.
+     17. **Satellite thermal-anomaly detection added (2026-07-31), not
+         yet confirmed live.** New `pipeline/satellite_hotspots.py`
+         fetches NASA FIRMS thermal-anomaly detections (VIIRS satellite
+         heat signatures) for the region and injects them into Stage 4's
+         prompt, answering an explicit request for "where are strikes
+         hitting" analysis. Deliberately does NOT try to distinguish
+         strikes from wildfires/gas flares/agricultural burning at the
+         data layer — this region includes major gas-flaring
+         infrastructure (Iraq, Gulf states) that would dominate a raw
+         feed. Instead, filters only FIRMS' own "low" confidence tier and
+         relies on the prompt's explicit corroboration-required caveat
+         plus the existing Tier 1/corroboration reasoning discipline —
+         the same approach that's already handled GDELT's inherent
+         noisiness well in practice (finding #15's live run correctly
+         tagged an uncorroborated GDELT signal as "Speculation," not
+         fact). This was a deliberate scope decision, not a shortcut:
+         built a local hotspot-suppression alternative was considered and
+         explicitly rejected in favor of trusting the same reasoning
+         process already proven to work. Requires `FIRMS_MAP_KEY` (free,
+         no credit card, register at
+         firms.modaps.eosdis.nasa.gov/api/map_key) — if unset or the
+         fetch fails, the section is omitted entirely. The FIRMS
+         area-CSV query shape (`/api/area/csv/{key}/{source}/{bbox}/
+         {days}`) was built from FIRMS' published documentation, not
+         confirmed against a live response — get a `FIRMS_MAP_KEY`, run
+         the pipeline, and check whether the "Satellite thermal
+         anomalies" section appears with real detections (or cleanly
+         omits itself, if there's nothing in the bounding box that day)
+         before trusting it.
 
      **First full clean run confirmed (2026-07-24):** cold-start handling
      ("no established pattern yet," not fabricated continuity), source

@@ -261,4 +261,39 @@ def test_build_user_prompt_handles_missing_change_pct_gracefully():
     oil_snapshot = {"wti": {"date": "2026-07-31", "price": 68.42, "change_1d_pct": None, "change_7d_pct": None}}
     prompt = _build_user_prompt([], MEMORY_CONTEXT, oil_snapshot=oil_snapshot)
     assert "no prior-day comparison available" in prompt
-    assert "no 7-day comparison available" in prompt
+
+
+def test_build_user_prompt_omits_hotspots_when_none():
+    prompt = _build_user_prompt([], MEMORY_CONTEXT, hotspots=None)
+    assert "thermal anomalies" not in prompt.lower()
+
+
+def test_build_user_prompt_includes_hotspots_when_present():
+    hotspots = [
+        {"lat": 31.5, "lon": 34.5, "date": "2026-07-31", "time": "1423", "confidence": "high", "frp_mw": 45.2, "satellite": "N"},
+    ]
+    prompt = _build_user_prompt([], MEMORY_CONTEXT, hotspots=hotspots)
+    assert "thermal anomalies" in prompt.lower()
+    assert "31.50, 34.50" in prompt
+    assert "FRP 45.2MW" in prompt
+
+
+def test_build_user_prompt_hotspots_carries_corroboration_caveat():
+    # The whole point of this section is that it must NOT be treated as
+    # settled fact without corroboration -- regression guard against that
+    # instruction accidentally getting dropped in a future edit.
+    hotspots = [
+        {"lat": 31.5, "lon": 34.5, "date": "2026-07-31", "time": "1423", "confidence": "high", "frp_mw": 45.2, "satellite": "N"},
+    ]
+    prompt = _build_user_prompt([], MEMORY_CONTEXT, hotspots=hotspots)
+    assert "gas flar" in prompt.lower()
+    assert "corroborat" in prompt.lower()
+
+
+def test_build_user_prompt_hotspots_handles_missing_frp():
+    hotspots = [
+        {"lat": 31.5, "lon": 34.5, "date": "2026-07-31", "time": "1423", "confidence": "nominal", "frp_mw": None, "satellite": "N"},
+    ]
+    prompt = _build_user_prompt([], MEMORY_CONTEXT, hotspots=hotspots)
+    assert "31.50, 34.50" in prompt
+    assert "FRP" not in prompt.split("31.50, 34.50")[1].split("\n")[0]

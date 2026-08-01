@@ -22,6 +22,7 @@ from pipeline.ollama_client import OllamaUnavailableError
 from pipeline.predictions import resolve_predictions
 from pipeline.render import render_briefing
 from pipeline.run_log import write_run_log_row
+from pipeline.satellite_hotspots import fetch_strike_zone_hotspots
 from pipeline.triage import triage_items
 from store import sqlite_client as db
 
@@ -103,6 +104,11 @@ def run() -> Path | None:
         if oil_snapshot is None:
             logger.info("No oil price snapshot this run (EIA_API_KEY unset or fetch failed) — omitted from prompt.")
 
+        logger.info("Stage 3c: satellite thermal-anomaly detections (FIRMS — free, no cost either way)")
+        hotspots = fetch_strike_zone_hotspots(os.environ.get("FIRMS_MAP_KEY"))
+        if hotspots is None:
+            logger.info("No satellite hotspot data this run (FIRMS_MAP_KEY unset or fetch failed) — omitted from prompt.")
+
         logger.info("Stage 4: deep analysis (Sonnet — the only API call)")
         result = run_analysis(
             triaged,
@@ -112,6 +118,7 @@ def run() -> Path | None:
             max_tokens=pipeline_cfg["analysis_max_tokens"],
             pipeline_cfg=pipeline_cfg,
             oil_snapshot=oil_snapshot,
+            hotspots=hotspots,
         )
         log_row.update(
             {
