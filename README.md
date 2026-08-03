@@ -9,7 +9,7 @@ and email delivery. See the full build spec for later phases.
 ```
 Stage 1  INGEST         agents/middle_east/{sources.py,ingest.py}   GDELT + RSS
 Stage 2a DEDUP           pipeline/dedup.py                          local embeddings (all-MiniLM-L6-v2)
-Stage 2b TRIAGE          pipeline/triage.py                         local Ollama (qwen2.5:14b) — no API call
+Stage 2b TRIAGE          pipeline/triage.py                         local Ollama (qwen2.5:7b) — no API call
 Stage 2c PREDICTION RES. pipeline/predictions.py                    local Ollama — checks pending predictions, no API call
 Stage 3  MEMORY QUERY    pipeline/memory.py                         Chroma + SQLite; dormancy sweep, track record
 Stage 3b OIL SNAPSHOT    pipeline/oil_prices.py                     EIA API — WTI/Brent spot prices, free, optional
@@ -22,7 +22,12 @@ Stage 5  WRITE-BACK      pipeline/memory.py, pipeline/render.py,    SQLite/Chrom
 ## Setup
 
 Requires Python 3.11+ and [Ollama](https://ollama.com) installed locally with
-`qwen2.5:14b` pulled (`ollama pull qwen2.5:14b`).
+`qwen2.5:7b` pulled (`ollama pull qwen2.5:7b`). **If your machine has 32GB+
+RAM**, `qwen2.5:14b` (the original default) will likely give better triage
+judgment — see the live-run findings log below for why 7b became the
+default (14b needed more memory than a 16GB Mac had, causing severe
+slowdowns and silent data loss to timeouts). Whichever you use, set
+`triage_model` in `config/watchlists.yaml` to match.
 
 ```bash
 python3.11 -m venv .venv
@@ -401,9 +406,10 @@ trusting daily use:**
    but it affects what a human clicking through from the briefing lands
    on; check a rendered briefing once real items flow through. Re-run
    after any source config change.
-2. A real end-to-end run: `ollama serve` (with `qwen2.5:14b` pulled) running
-   in the background, then `python -m agents.middle_east.run` with a real
-   `ANTHROPIC_API_KEY` in `.env`. Check that:
+2. A real end-to-end run: `ollama serve` (with `qwen2.5:7b` pulled — see
+   Setup above for why not 14b) running in the background, then
+   `python -m agents.middle_east.run` with a real `ANTHROPIC_API_KEY` in
+   `.env`. Check that:
    - `sentence-transformers` downloads and runs `all-MiniLM-L6-v2` without
      error (only failed here due to the sandbox's network policy, not a
      code issue, but worth confirming for real).
@@ -802,6 +808,42 @@ trusting daily use:**
          anomalies" section appears with real detections (or cleanly
          omits itself, if there's nothing in the bounding box that day)
          before trusting it.
+     18. **`qwen2.5:14b` needed more memory than a 16GB Mac had, causing
+         severe swap thrashing and likely silent triage data loss.**
+         Confirmed live 2026-08-02 via Activity Monitor: with the
+         pipeline mid-run, `llama-server` (Ollama's inference engine) was
+         using 17.34GB of memory — more than the machine's entire 16GB of
+         physical RAM — and macOS had 11.36GB swapped to disk just to
+         keep it running at all. A run that should take ~15-20 minutes
+         was still on triage batch 39 after 3+ hours (averaging ~5.2
+         minutes/batch). That's not just slow: `pipeline/ollama_client.py`
+         times out any single Ollama call at 180s (3 minutes), and the
+         observed pace was already past that threshold on average — real
+         batches were very likely timing out and getting their ~20 items
+         silently dropped via `pipeline/triage.py`'s per-batch
+         `httpx.HTTPError` catch (working as designed for a genuinely
+         dead Ollama, but here masking a starved-but-alive one). Checked
+         for a second, worse failure mode first: whether the hourly
+         LaunchAgent retry had stacked additional overlapping pipeline
+         instances on top of the slow one, since `already_ran_today()`
+         only checks for a *completed* row in `run_log.csv` (written in
+         `run()`'s `finally` block), so a run running long enough could
+         let a retry launch a second instance competing for the same
+         starved RAM. Confirmed via `ps aux` that this did NOT happen —
+         only one instance was running, and `caffeinate` was confirmed
+         still correctly holding the Mac awake (finding #14's fix
+         holding). Fixed by switching `triage_model` from `qwen2.5:14b`
+         to `qwen2.5:7b` in `config/watchlists.yaml` — well under half
+         the memory footprint, should fit in 16GB without swapping at
+         all. Not a code bug and not something a code fix alone could
+         solve (16GB is fixed on Apple Silicon); if you're running this
+         on a machine with 32GB+ RAM, switching back to `qwen2.5:14b` is
+         likely better for triage judgment quality and worth trying.
+         **Not yet confirmed live on the smaller model** — the concern
+         going in is whether qwen2.5:7b's triage judgment holds up
+         well enough (it's a comparatively simple relevance-scoring
+         task, so the expectation is yes, but that's an assumption, not
+         yet verified against real output).
 
      **First full clean run confirmed (2026-07-24):** cold-start handling
      ("no established pattern yet," not fabricated continuity), source

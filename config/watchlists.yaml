@@ -16,7 +16,25 @@ pipeline:
   memory_retrieval_count: 12
   # Ollama model used for triage (Stage 2) AND the prediction resolution
   # check (Stage 2c) — both are local-only, no Anthropic API call.
-  triage_model: qwen2.5:14b
+  #
+  # Was qwen2.5:14b. Confirmed live 2026-08-02: on a 16GB Mac, llama-server
+  # loading this model alone used 17.34GB — more than the machine's total
+  # physical RAM — forcing macOS into heavy disk swapping (11.36GB swap
+  # observed) just to run it at all. Every Ollama call got dramatically
+  # slower as a result: a run that should take ~15-20 minutes took 3+
+  # hours and was still short of finishing triage. Worse than just slow:
+  # each Ollama call has a 180s timeout (pipeline/ollama_client.py), and
+  # the observed pace (~5.2 min/batch average) was already past that
+  # timeout on average, meaning real triage batches were very likely
+  # silently timing out and getting their ~20 items dropped from that
+  # day's analysis entirely (see pipeline/triage.py's per-batch
+  # httpx.HTTPError catch) — not just a slow run, a lossy one. Switched to
+  # qwen2.5:7b, which needs well under half the memory and should fit in
+  # 16GB without swapping. Triage is a comparatively simple relevance-
+  # scoring task, so a smaller model should hold up fine, but that's
+  # worth confirming against real output rather than assuming — watch the
+  # first few runs on this model.
+  triage_model: qwen2.5:7b
   ollama_host: http://localhost:11434
 
   # Sonnet model for Stage 4 — the ONLY stage that calls the Anthropic API.
