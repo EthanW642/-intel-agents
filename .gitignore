@@ -1,8 +1,9 @@
+*.pyc
+*.sqlite3
+.env
+.pytest_cache/
 .venv/
 __pycache__/
-*.pyc
-.pytest_cache/
-.env
-data/
 briefings/
-*.sqlite3
+data/
+venv/
