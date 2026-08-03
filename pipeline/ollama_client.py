@@ -5,8 +5,12 @@ localhost).
 """
 from __future__ import annotations
 
+import logging
+
 import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+
+logger = logging.getLogger(__name__)
 
 
 class OllamaUnavailableError(Exception):
@@ -69,3 +73,33 @@ def call_ollama(
     )
     resp.raise_for_status()
     return resp.json()["message"]["content"]
+
+
+def unload_model(host: str, model: str, timeout: float = 30.0) -> None:
+    """Tells Ollama to free `model` from memory immediately, instead of
+    leaving it loaded for its default ~5-minute idle keep-alive (or longer,
+    if anything else pings it in the meantime). Confirmed live 2026-08-02:
+    on a 16GB Mac, qwen2.5:14b's llama-server process alone used more
+    memory than the machine's total physical RAM, and even qwen2.5:7b grew
+    to ~13GB resident under load — holding that through Stage 3-5 (memory
+    query, the Sonnet call, write-back/render/email — none of which touch
+    Ollama at all) serves no purpose and just keeps the rest of the run,
+    and the rest of the day until the next scheduled run, fighting for
+    memory it doesn't need to be using.
+
+    Call this once, right after the last Ollama-dependent stage
+    (prediction resolution, Stage 2c) finishes. Best-effort: failure here
+    is never worth failing the run over, so this logs a warning and moves
+    on rather than raising — an already-paid-for day's briefing shouldn't
+    be lost because a memory-cleanup courtesy call failed.
+    """
+    try:
+        resp = httpx.post(
+            f"{host}/api/chat",
+            json={"model": model, "messages": [], "keep_alive": 0},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        logger.info("Unloaded %s from Ollama — freeing memory for the rest of the run.", model)
+    except Exception:
+        logger.warning("Failed to explicitly unload %s from Ollama — non-fatal, continuing.", model, exc_info=True)

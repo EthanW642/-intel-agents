@@ -25,6 +25,7 @@ def mocked_run_deps(monkeypatch):
     monkeypatch.setattr(run_module.db, "get_active_theses", lambda *a, **k: [])
     monkeypatch.setattr(run_module.db, "get_pending_predictions", lambda *a, **k: [])
     monkeypatch.setattr(run_module, "resolve_predictions", lambda *a, **k: [])
+    monkeypatch.setattr(run_module, "unload_model", MagicMock())
     monkeypatch.setattr(run_module, "write_run_log_row", MagicMock())
     return run_module
 
@@ -127,3 +128,53 @@ def test_prediction_resolution_receives_triaged_items_not_deduped(mocked_run_dep
     passed_items = resolve_predictions_mock.call_args[0][1]
     assert passed_items == triaged_items
     assert passed_items != deduped_items
+
+
+def test_ollama_model_unloaded_after_prediction_resolution_before_analysis(mocked_run_deps, monkeypatch, tmp_path):
+    # Confirmed live 2026-08-02: on a 16GB Mac, leaving the Ollama model
+    # loaded through Stage 3-5 (none of which touch Ollama) needlessly
+    # held ~9-13GB of memory hostage for the rest of the run. Regression
+    # guard that unload_model fires exactly once, after prediction
+    # resolution and before the Sonnet call -- not skipped, not duplicated,
+    # not fired too early (while triage/predictions might still need it).
+    run_module = mocked_run_deps
+    call_order: list[str] = []
+    monkeypatch.setattr(run_module, "triage_items", MagicMock(return_value=["triaged-item"]))
+    monkeypatch.setattr(
+        run_module, "resolve_predictions", lambda *a, **k: call_order.append("resolve_predictions") or []
+    )
+    monkeypatch.setattr(run_module, "unload_model", lambda *a, **k: call_order.append("unload_model"))
+    monkeypatch.setattr(run_module, "query_memory", lambda *a, **k: {})
+    monkeypatch.setattr(
+        run_module,
+        "run_analysis",
+        lambda *a, **k: call_order.append("run_analysis")
+        or {
+            "effort": "low",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+            "cost_usd": 0.0,
+            "write_back": {},
+            "markdown": "# Briefing",
+        },
+    )
+    monkeypatch.setattr(
+        run_module,
+        "write_back",
+        lambda *a, **k: {
+            "new_entities": 0,
+            "new_relationships": 0,
+            "new_events": 0,
+            "thesis_updates_applied": 0,
+            "thesis_updates_rejected": 0,
+            "new_predictions": 0,
+        },
+    )
+    briefing_path = tmp_path / "briefing.md"
+    briefing_path.write_text("# Briefing")
+    monkeypatch.setattr(run_module, "render_briefing", lambda *a, **k: briefing_path)
+    monkeypatch.delenv("GMAIL_ADDRESS", raising=False)
+    monkeypatch.delenv("GMAIL_APP_PASSWORD", raising=False)
+
+    run_module.run()
+
+    assert call_order == ["resolve_predictions", "unload_model", "run_analysis"]

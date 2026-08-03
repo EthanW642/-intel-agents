@@ -320,7 +320,7 @@ requiring live network access to those specific services could be run here.
 Hugging Face (for the dedup/Chroma embedding model) and PyPI *were*
 reachable, which is documented per-item below rather than assumed.
 
-**Verified in this environment** (`python -m pytest tests/` — 121 tests,
+**Verified in this environment** (`python -m pytest tests/` — 125 tests,
 all passing; also `python -m py_compile` on every file and a plain import
 of every module):
 - Dedup clustering math (against a fake embedder — the real
@@ -358,6 +358,14 @@ of every module):
   a response where every row gets filtered out correctly returns `None`
   rather than an empty-but-truthy list — all against a mocked
   `httpx.get`, no real FIRMS API call made.
+- `pipeline/ollama_client.py::unload_model()`: sends the correct
+  Ollama unload request shape (`messages: []`, `keep_alive: 0`), and
+  never raises on a connection failure or an HTTP error status —
+  confirming a broken cleanup call can't turn into a lost run — all
+  against a mocked `httpx.post`. Also an orchestration-level test on
+  `agents/middle_east/run.py` confirming `unload_model` fires exactly
+  once, after prediction resolution and before the Sonnet call — not
+  skipped, not duplicated, not fired too early.
 - The Sonnet call's retry-once-after-60s behavior on genuinely retryable
   errors (connection/timeout, 429, 500, 529 overloaded) and that it does
   *not* retry non-retryable errors (e.g. 400 bad request) or retry more
@@ -839,11 +847,49 @@ trusting daily use:**
          solve (16GB is fixed on Apple Silicon); if you're running this
          on a machine with 32GB+ RAM, switching back to `qwen2.5:14b` is
          likely better for triage judgment quality and worth trying.
-         **Not yet confirmed live on the smaller model** — the concern
-         going in is whether qwen2.5:7b's triage judgment holds up
-         well enough (it's a comparatively simple relevance-scoring
-         task, so the expectation is yes, but that's an assumption, not
-         yet verified against real output).
+         **Confirmed live 2026-08-03, partial improvement, not a full
+         fix.** Swap dropped from 11.36GB to 7.49GB — real, but not
+         eliminated. `llama-server` running `qwen2.5:7b` grew to 13.43GB
+         resident under load (well above its ~9.5GB size right after
+         loading), and combined with everything else open at the time (a
+         lot of Chrome tabs/helpers, other apps), total memory used was
+         still pinned at 15.37 of 16GB. Pace was still slow — 5 triage
+         batches in ~90 minutes (~18 min/batch), actually *worse* than
+         14b's swap-degraded average of ~5.2 min/batch — and a `top -l 1`
+         snapshot caught the CPU at 86.8% idle with `llama-server` not
+         even in the top 10 by usage, consistent with it stalled mid
+         page-fault rather than genuinely computing. Bottom line: on a
+         16GB Mac, model size alone isn't the only lever — what else is
+         open when the pipeline runs matters just as much. See finding
+         #19 for one real fix implemented as a result (freeing Ollama's
+         memory the moment it's no longer needed); closing other
+         memory-heavy apps before a run is the other practical mitigation,
+         with no code fix possible for it.
+     19. **Ollama's model was never explicitly unloaded, holding memory
+         hostage long after it was needed.** Direct fix for part of
+         finding #18: nothing in this pipeline ever told Ollama it could
+         free the model. It sat loaded by Ollama's own default (~5
+         minutes idle, or longer if anything else pinged it) through
+         Stage 3-5 — memory query, the Sonnet call, write-back/render/
+         email — none of which touch Ollama at all, and then for the rest
+         of the day until the next scheduled run. Added
+         `pipeline/ollama_client.py::unload_model()`, which sends
+         Ollama's documented immediate-unload request (`POST /api/chat`
+         with `"messages": []` and `"keep_alive": 0`) right after Stage
+         2c (prediction resolution) finishes — the last stage that needs
+         Ollama at all. Best-effort by design: wrapped in a broad
+         try/except that only logs a warning on failure, since losing an
+         already-completed day's briefing over a memory-cleanup courtesy
+         call failing would be a much worse outcome than just leaving the
+         model loaded a bit longer. This does NOT speed up triage/
+         prediction-resolution themselves (the model has to be loaded
+         while those stages genuinely run) — it only stops the pipeline
+         from needlessly holding that memory hostage once it's done
+         needing it. 3 new tests confirm the exact request shape, and
+         that failures (connection refused, HTTP error) never raise. Not
+         yet confirmed live — check `data/launchagent.log` for the
+         "Unloaded ... from Ollama" line, and Activity Monitor, on the
+         next real run.
 
      **First full clean run confirmed (2026-07-24):** cold-start handling
      ("no established pattern yet," not fabricated continuity), source

@@ -18,7 +18,7 @@ from pipeline.dedup import dedup_items
 from pipeline.deliver import send_briefing_email, send_ollama_outage_alert
 from pipeline.memory import init_store, query_memory, write_back
 from pipeline.oil_prices import fetch_oil_snapshot
-from pipeline.ollama_client import OllamaUnavailableError
+from pipeline.ollama_client import OllamaUnavailableError, unload_model
 from pipeline.predictions import resolve_predictions
 from pipeline.render import render_briefing
 from pipeline.run_log import write_run_log_row
@@ -86,6 +86,13 @@ def run() -> Path | None:
         for r in resolutions:
             db.resolve_prediction(conn, r["id"], r["verdict"], r["reason"])
         log_row["predictions_resolved"] = len(resolutions)
+
+        # Nothing past this point touches Ollama — free the model from
+        # memory now rather than leaving it loaded through Stage 3-5
+        # (memory query, the Sonnet call, write-back/render/email) and for
+        # the rest of the day until the next scheduled run. Best-effort;
+        # never worth failing the run over (see unload_model's docstring).
+        unload_model(pipeline_cfg["ollama_host"], pipeline_cfg["triage_model"])
 
         logger.info("Stage 3: memory query")
         memory_context = query_memory(
