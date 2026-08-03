@@ -20,6 +20,27 @@ gdelt:
   # Actor1CountryCode / Actor2CountryCode use CAMEO 3-letter country codes,
   # which for current states match ISO 3166-1 alpha-3. An event is kept if
   # EITHER actor's country code is in this list.
+  #
+  # USA and TUR were REMOVED from this list on 2026-07-23 after a live run
+  # produced 27,308 matched GDELT events for a single day (vs. the spec's
+  # ~150-300 raw-items/day target) and drove 43 sequential local-triage
+  # Ollama batches — on a fanless M4 Air that's a real thermal-throttling
+  # risk, exactly what the spec's hardware note warns against. Root cause:
+  # this list is OR-matched against EITHER actor, with no requirement that
+  # the OTHER actor be Middle-East-relevant, so including a global power
+  # like the US matched a huge fraction of all daily world diplomatic
+  # events (US-China, US-Mexico, anything), not just US-Middle East ones.
+  # US/Turkey involvement in an actual Middle East event is still fully
+  # captured two other ways: (a) the OTHER actor in the pair is one of the
+  # actual Middle East countries below, which already satisfies this list's
+  # OR-match without USA/TUR needing to be in it; (b) geo_country_codes
+  # below catches anything that physically happened in the region
+  # (including Turkey's own "TU" geo code) regardless of which actors were
+  # involved. What's lost: a US statement made in Washington *about* the
+  # region with no Middle East country as the other actor (e.g. a CENTMOM
+  # posture announcement with no named counterpart) — an acceptable Phase-1
+  # trade-off per the spec's own "tune based on observed false-negative
+  # rate" instruction; revisit if that gap turns out to matter.
   actor_country_codes:
     - ISR  # Israel
     - PSE  # Palestine (West Bank / Gaza)
@@ -36,8 +57,6 @@ gdelt:
     - BHR  # Bahrain
     - KWT  # Kuwait
     - OMN  # Oman
-    - TUR  # Turkey (regionally entangled: Syria, Kurdish issues)
-    - USA  # catches US CENTCOM / US-actor events involving the region
   # ActionGeo_CountryCode uses FIPS 10-4 2-letter codes, which diverge from
   # ISO for several countries in this list (e.g. Iraq is IZ in FIPS, not IQ).
   # UNVERIFIED against the GDELT codebook from this build environment —
@@ -62,28 +81,132 @@ gdelt:
     - TU  # Turkey
   # Only keep events whose GoldsteinScale magnitude or NumMentions clears a
   # floor, to avoid flooding triage with trivial/low-signal wire events.
-  min_num_mentions: 5
-
-liveuamap:
-  # High-recall, lower-reliability rapid-update layer (spec 4.1). Treat
-  # exactly like any other RSS source at triage time — no whitelisting past
-  # triage. Polled more frequently than the narrative RSS layer.
-  feed_url: "https://israelpalestine.liveuamap.com/rss"
-  poll_interval_minutes: 20
-  # UNVERIFIED live from this build environment.
+  # min_num_mentions alone was 5 — far too permissive at this volume (see
+  # the actor_country_codes note above); raised to 10 and paired with an
+  # actual Goldstein-magnitude floor (previously described in this comment
+  # but never implemented) so a low-mention-but-high-impact breaking event
+  # still gets through even before wire pickup accumulates. An event is
+  # kept if EITHER threshold clears.
+  min_num_mentions: 10
+  min_abs_goldstein: 5.0  # GoldsteinScale runs -10..+10; 5 = a clearly significant event, not routine chatter
 
 rss_feeds:
-  # Narrative/context layer. Phase 1 uses 3 of the 6 sources listed in the
-  # spec (Times of Israel, Al Jazeera, Reuters ME) — extend this list with
-  # AP Middle East / Iran International / Al-Monitor in a later phase.
+  # Narrative/context layer. Two source families here, deliberately kept
+  # distinct at triage/analysis time via the `tier` field:
+  #   - Tier 3 "aligned/interpretive" (Times of Israel, Tehran Times,
+  #     Haaretz): reliable on facts, but explicitly one side's framing —
+  #     the model is instructed (prompts/analysis_system.md, source
+  #     reliability tiering) to attribute interpretive claims from these to
+  #     the source, never state them as neutral fact. Times of
+  #     Israel/Haaretz and Tehran Times are opposite sides of the same
+  #     conflict; Haaretz and Tehran Times are further apart still along a
+  #     second axis (critical-of-own-government vs. establishment-aligned)
+  #     — see Haaretz's own note below for why that's still Tier 3, not 2.
+  #   - Tier 2 "wire/agency" (Al Jazeera, BBC, The Guardian, NPR,
+  #     Al-Monitor): broad international/regional outlets not aligned to a
+  #     single regional party to the conflict, added 2026-07-31 per
+  #     explicit request for international/"unbiased" coverage to balance
+  #     the Tier 3 sources above. None of these are claimed to be free of
+  #     all editorial perspective (no outlet is), but they're not a party
+  #     to the conflict the way Times of Israel/Tehran Times/Haaretz are,
+  #     which is the specific gap being filled here.
+  #   - Tier 4 "rapid/uncorroborated" (Google News — Middle East, below):
+  #     a standing search query, not a single outlet, added 2026-07-31 to
+  #     fill the role the removed `liveuamap` source used to hold
+  #     (LiveUAMap's free RSS tier died 2026-07-23 — see git history for
+  #     the removed block if you need the old feed_url/rationale). High
+  #     recall, needs Tier 1/2 corroboration before anything from it
+  #     supports a standalone claim — never whitelisted past triage.
+  #   - AP/Reuters/Axios "via Google News" (last 3 entries): Tier 2, NOT
+  #     Tier 4 — see the paragraph below for why these are different from
+  #     the general Google News query above.
+  #
+  # Reuters, AP, and AFP — all three major global wire agencies — don't
+  # maintain an official public RSS feed anymore. The spec already calls
+  # this out for Reuters ("discontinued public RSS feeds in 2020 — do not
+  # use a Reuters RSS source"); live checks on 2026-07-31 confirmed AP is
+  # in the same position (no first-party feed, only unofficial third-party
+  # scrapers/generators), and AFP too — AFP has stated its full RSS is off
+  # deliberately, since a free public feed would compete with its own
+  # paying syndication clients. This isn't specific to any one agency,
+  # it's how wire agencies distribute content now, and none of the three
+  # is a source this pipeline should depend on an unofficial *scraper*
+  # for. All three are still captured indirectly via GDELT's GKG layer,
+  # same as before. The Guardian was added as international balance in
+  # their place: independently owned (Scott Trust, not government-funded,
+  # unlike BBC/France 24/NPR/VOA), with a confirmed official RSS feed.
+  #
+  # AP and Reuters ARE reached below anyway, though — not via an
+  # unofficial third-party scraper, but via Google News RSS search scoped
+  # with `site:apnews.com` / `site:reuters.com`. This is different in kind
+  # from a scraper: it's Google's own official search index, returning
+  # that outlet's actual articles, not a re-hosted copy of their content.
+  # Tagged Tier 2 (the outlet's real tier) rather than Tier 4, since the
+  # high-recall/low-reliability tradeoff that makes the general Google
+  # News query above Tier 4 doesn't apply — every item genuinely is
+  # AP's/Reuters'/Axios' own reporting, Google is just the delivery
+  # mechanism standing in for the RSS feed they don't publish. Axios is
+  # included the same way even though it does have a general RSS feed
+  # (spec 5.1 names it as a Tier 2 example directly) — it just has no
+  # Middle East-specific vertical, so this reaches the ME-relevant subset
+  # directly instead of relying on triage to filter Axios' mostly
+  # US-domestic-policy general feed.
   - name: "Times of Israel"
     url: "https://www.timesofisrael.com/feed/"
     poll_interval_minutes: 60
+    tier: 3  # aligned/interpretive — reliable on facts, framing attributed to source
   - name: "Al Jazeera"
     url: "https://www.aljazeera.com/xml/rss/all.xml"
     poll_interval_minutes: 60
+    tier: 2  # wire/agency — treated as reliable factual reporting
     note: "General AJ feed, not ME-specific — triage filters relevance."
-  - name: "Reuters Middle East"
-    url: "https://www.reutersagency.com/feed/?best-regions=middle-east&post_type=best"
+  - name: "Tehran Times"
+    url: "https://www.tehrantimes.com/rss"
     poll_interval_minutes: 60
-    note: "Reuters retired most public RSS in ~2020; UNVERIFIED, confirm this still resolves before relying on it."
+    tier: 3  # aligned/interpretive — explicitly establishment-aligned, not neutral (spec 4.1)
+    note: "Domestic Iranian English-language daily — captures Iran's own stated/official framing directly, not filtered through Western/Israeli coverage of it."
+  - name: "BBC News — Middle East"
+    url: "https://feeds.bbci.co.uk/news/world/middle_east/rss.xml"
+    poll_interval_minutes: 60
+    tier: 2  # wire/agency — UK public broadcaster, ME-specific section, not a party to the conflict
+    note: "Verified live 2026-07-31: 30 entries, newest same-day."
+  - name: "The Guardian — Middle East"
+    url: "https://www.theguardian.com/world/middleeast/rss"
+    poll_interval_minutes: 60
+    tier: 2  # wire/agency — independently owned (Scott Trust, not government-funded), ME-specific section
+    note: "Swapped in for France 24 2026-07-31 per explicit preference for a source closer to Reuters/AP than a state-funded broadcaster — independent ownership was the deciding factor. First guess at this URL (.../middle-east/rss, hyphenated) 404'd on a live verify_sources.py run; corrected to the unhyphenated tag slug (world/middleeast), which verified live the same day."
+  - name: "NPR — Middle East"
+    url: "https://feeds.npr.org/1009/rss.xml"
+    poll_interval_minutes: 60
+    tier: 2  # wire/agency — US public radio, ME-specific section
+    note: "Verified live 2026-07-31: 10 entries, newest same-day."
+  - name: "Al-Monitor"
+    url: "https://www.al-monitor.com/rss"
+    poll_interval_minutes: 60
+    tier: 2  # wire/agency, but see note — analytical/translation-driven, not raw wire copy, and not aligned to one side
+    note: "Added 2026-07-31. Middle East specialist outlet (the whole site, not a general feed filtered by triage) that translates and syndicates regional journalists into English — one of the spec's originally-named later-phase candidates, never wired in until now. Not aligned to a single party to the conflict, which is why it's Tier 2 rather than 3, but it's genuinely more interpretive/analytical than AP-style wire copy — treat that distinction as real, not just a label. Verified live 2026-07-31: 20 entries, newest same-day."
+  - name: "Haaretz"
+    url: "https://www.haaretz.com/srv/israel-news-rss"
+    poll_interval_minutes: 60
+    tier: 3  # aligned/interpretive — an Israeli domestic paper, still a party to the conflict by nationality even though editorially critical of its own government
+    note: "Added 2026-07-31. Deliberately the domestic-dissent counterpart to Tehran Times: both are domestic papers of a party to the conflict, but where Tehran Times is establishment-aligned, Haaretz is known for reporting critical of the Israeli government — captures internal Israeli dissent/debate that Times of Israel's more mainstream framing doesn't. Still Tier 3, not Tier 2: nationality/proximity to one side of the conflict is what drives the tier, not the paper's stance toward its own government. General Israel-news feed, not ME-region-specific — triage filters relevance, same as the Al Jazeera general feed. Verified live 2026-07-31: 20 entries, newest same-day."
+  - name: "Google News — Middle East"
+    url: "https://news.google.com/rss/search?q=Israel%20OR%20Gaza%20OR%20Iran%20OR%20Lebanon%20OR%20Syria%20OR%20Yemen%20OR%20%22Middle%20East%22&hl=en-US&gl=US&ceid=US:en"
+    poll_interval_minutes: 20  # polled more frequently than the narrative layer, same cadence LiveUAMap used
+    tier: 4  # rapid/uncorroborated — needs Tier 1/2 corroboration (spec 5.1), same role LiveUAMap held
+    note: "Replaces LiveUAMap (removed from this file — see git history) as the Tier 4 rapid/high-recall layer, added 2026-07-31. Official Google endpoint, no API key, no signup — a standing search query rather than a single outlet's feed, so it aggregates across a large, uncurated set of publishers in near-real time. That's a deliberate match to what made LiveUAMap Tier 4 in the first place: high recall, low individual-item reliability, explicitly requiring Tier 1/2 corroboration before anything from it supports a standalone claim (see prompts/analysis_system.md). Verified live 2026-07-31: 100 entries, newest same-day — 100 looks like Google News RSS's per-request page cap (all four Google News entries in this file hit exactly 100), not a config problem; worth watching whether that caps real coverage or just means very fast triage batching on heavy days."
+  - name: "AP — via Google News"
+    url: "https://news.google.com/rss/search?q=site%3Aapnews.com%20%28Israel%20OR%20Gaza%20OR%20Iran%20OR%20Lebanon%20OR%20Syria%20OR%20Yemen%20OR%20%22Middle%20East%22%29&hl=en-US&gl=US&ceid=US:en"
+    poll_interval_minutes: 60
+    tier: 2  # wire/agency — this IS AP's own content, just reached via Google's site: search since AP has no RSS of its own (see note above)
+    note: "Added 2026-07-31: a Google News search scoped to site:apnews.com, working around AP having no official RSS feed (see the AP/Reuters/AFP note above) while still getting AP's actual reporting, not a third-party summary of it. Tier 2, not 4 — the recall/reliability tradeoff that makes the general Google News entry above Tier 4 doesn't apply here, since every item is genuinely from apnews.com, Google is just the delivery mechanism. Labeled 'via Google News' in the name for honest attribution: entry links may route through a news.google.com redirect rather than a bare apnews.com URL — still unconfirmed which, worth spot-checking a rendered briefing. Verified live 2026-07-31: 100 entries (Google's apparent per-request cap), newest same-day."
+  - name: "Reuters — via Google News"
+    url: "https://news.google.com/rss/search?q=site%3Areuters.com%20%28Israel%20OR%20Gaza%20OR%20Iran%20OR%20Lebanon%20OR%20Syria%20OR%20Yemen%20OR%20%22Middle%20East%22%29&hl=en-US&gl=US&ceid=US:en"
+    poll_interval_minutes: 60
+    tier: 2  # wire/agency — this IS Reuters' own content, just reached via Google's site: search since Reuters has no RSS of its own (see note above)
+    note: "Added 2026-07-31, same site: search-scoping approach as the AP entry above, for the same reason: Reuters' RSS has been dead since 2020 (see the spec-cited note above) but this reaches their actual reporting anyway. Same caveats apply — Tier 2 because it's genuinely Reuters content, link-format (bare reuters.com vs. Google redirect) still unconfirmed. Verified live 2026-07-31: 100 entries (Google's apparent per-request cap), newest same-day."
+  - name: "Axios — via Google News"
+    url: "https://news.google.com/rss/search?q=site%3Aaxios.com%20%28Israel%20OR%20Gaza%20OR%20Iran%20OR%20Lebanon%20OR%20Syria%20OR%20Yemen%20OR%20%22Middle%20East%22%29&hl=en-US&gl=US&ceid=US:en"
+    poll_interval_minutes: 60
+    tier: 2  # wire/agency (spec 5.1 names Axios as a Tier 2 example directly) — reached via Google's site: search since Axios has no Middle East-specific RSS vertical
+    note: "Added 2026-07-31. Axios does have its own general RSS feed, but no Middle East-specific one — this site:-scoped Google News query gets the ME-relevant subset directly rather than pulling Axios' full, mostly US-domestic-policy general feed and relying entirely on triage to filter it. Verified live 2026-07-31: 100 entries (Google's apparent per-request cap), newest same-day."

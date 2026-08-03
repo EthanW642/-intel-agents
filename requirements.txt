@@ -9,3 +9,6 @@ APScheduler>=3.11.3
 tenacity>=9.1.4
 gdelt>=0.1.14
 pandas>=2.0.0
+
+# dev/test only
+pytest>=8.0.0

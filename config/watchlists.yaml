@@ -14,15 +14,112 @@ pipeline:
   # Stage 3 — memory: how many semantically related past entries to retrieve
   # from Chroma per run and hand to the analysis stage.
   memory_retrieval_count: 12
-  # Ollama model used for triage (Stage 2). Must already be pulled locally.
-  triage_model: qwen2.5:14b
+  # Ollama model used for triage (Stage 2) AND the prediction resolution
+  # check (Stage 2c) — both are local-only, no Anthropic API call.
+  #
+  # Was qwen2.5:14b. Confirmed live 2026-08-02: on a 16GB Mac, llama-server
+  # loading this model alone used 17.34GB — more than the machine's total
+  # physical RAM — forcing macOS into heavy disk swapping (11.36GB swap
+  # observed) just to run it at all. Every Ollama call got dramatically
+  # slower as a result: a run that should take ~15-20 minutes took 3+
+  # hours and was still short of finishing triage. Worse than just slow:
+  # each Ollama call has a 180s timeout (pipeline/ollama_client.py), and
+  # the observed pace (~5.2 min/batch average) was already past that
+  # timeout on average, meaning real triage batches were very likely
+  # silently timing out and getting their ~20 items dropped from that
+  # day's analysis entirely (see pipeline/triage.py's per-batch
+  # httpx.HTTPError catch) — not just a slow run, a lossy one. Switched to
+  # qwen2.5:7b, which needs well under half the memory and should fit in
+  # 16GB without swapping. Triage is a comparatively simple relevance-
+  # scoring task, so a smaller model should hold up fine, but that's
+  # worth confirming against real output rather than assuming — watch the
+  # first few runs on this model.
+  triage_model: qwen2.5:7b
   ollama_host: http://localhost:11434
-  # Sonnet model + thinking budget for Stage 4.
+
+  # Sonnet model for Stage 4 — the ONLY stage that calls the Anthropic API.
   analysis_model: claude-sonnet-5
-  analysis_max_tokens: 8000
-  # Daily schedule for the full pipeline run (local time).
-  run_hour: 6
-  run_minute: 0
+  # Hard output ceiling passed to the API (thinking + response text share
+  # this budget). Not the same thing as the effort knobs below.
+  #
+  # Was 16000 — too low. Confirmed live 2026-07-24: a real "max"-effort
+  # call on 68 items hit the 16000-token cap during thinking, got cut off
+  # before it reached the required closing JSON write-back block, and the
+  # $0.20 call wrote back zero entities/events/theses/predictions. Raised
+  # to 64000 — still too low. Confirmed live 2026-07-25: a real "max"-
+  # effort call on 73 triaged items (a genuinely heavy day, correctly
+  # escalated per the thresholds below) hit the 64000-token cap again —
+  # output_tokens landed at exactly 64000, no JSON block found, $0.68
+  # wrote back nothing. Raised to 128000, Sonnet 5's actual documented
+  # output ceiling (streaming, which analyze.py already uses) — this
+  # doesn't force every call to use 128000 tokens (adaptive thinking only
+  # uses what a given day's load actually needs, and max_tokens is just a
+  # ceiling, not a spend target), it removes the truncation risk entirely
+  # rather than guessing at another still-possibly-too-low number.
+  analysis_max_tokens: 128000
+
+  # Thinking depth for Stage 4 (spec 5's "scaled thinking budget, not
+  # flat"). NOTE: the spec's original design was a token budget
+  # (base ~2000 + ~300/item, capped ~10000) via `thinking.budget_tokens`.
+  # That parameter is rejected outright (400) on Sonnet 5 — the current
+  # API's equivalent lever is `output_config.effort`
+  # (low/medium/high/xhigh/max), so this config translates the same intent
+  # onto effort tiers instead of a token count. See
+  # pipeline/analyze.py::compute_effort and the README.
+  #
+  # Deliberately conservative: "high" is a CAP for ordinary days, not a
+  # default reached by item count alone — a quiet day should score low or
+  # medium. "load" = triaged item count + 2x the number of currently-active
+  # theses (candidates for evaluation; thesis evaluation is the expensive
+  # part of the reasoning protocol).
+  effort_low_max_load: 8
+  effort_medium_max_load: 16
+  # load above effort_medium_max_load runs at "high" — and stays at "high"
+  # regardless of how much higher the load goes, UNLESS the explicit
+  # escalation gate below is also met. Escalating past "high" requires
+  # BOTH a real item-volume signal AND active theses actually in play this
+  # run (an approximation — which theses get a real evidentiary trigger is
+  # only known inside the call itself; the count of currently-active
+  # theses is the best pre-call proxy).
+  #
+  # xhigh_min_active_theses was 1, then 2 — too low. Confirmed live
+  # 2026-07-24: the 2 permanently-seeded standing theses never expire on
+  # their own, so any threshold <= 2 was satisfied unconditionally, every
+  # day, forever — leaving only the item-count gate doing any real work.
+  # Raised to 3, requiring at least one real (non-seed) thesis to have
+  # formed.
+  #
+  # There used to be a "max" tier above xhigh, gated by
+  # max_min_triaged_items/max_min_active_theses (35/4). Removed entirely
+  # — confirmed live 2026-07-26: once the memory store matured to 4 real
+  # active/reinforced theses (an expected, not anomalous, outcome for a
+  # domain watching a persistently multi-front active conflict, not a
+  # rare spike), that gate stayed permanently cleared, and hitting
+  # xhigh_min_triaged_items-scale item counts (which real runs did on 3
+  # consecutive days) made "max" effort the routine daily outcome instead
+  # of the reserved-for-genuinely-rare-days behavior it was designed for
+  # — the exact "high becomes the silent default" failure this whole
+  # tiering scheme exists to prevent, just one tier up. xhigh is Sonnet
+  # 5's own documented top recommended tier for agentic/reasoning work,
+  # so the pipeline now caps there; there's no config knob for "max"
+  # because there's no path to it anymore.
+  xhigh_min_triaged_items: 20
+  xhigh_min_active_theses: 3
+
+  # Daily schedule for the full pipeline run (local time). Spec targets a
+  # 5:30am run, completion/send by 6:15, buffer before a 6:30 read time.
+  run_hour: 5
+  run_minute: 30
+
+  # Thesis dormancy window (spec 3.B): an active/reinforced/complicated
+  # thesis with no new corroborating evidence for this many days moves to
+  # dormant (not falsified — falsified is reserved for active contradiction).
+  dormancy_window_days: 14
+
+  # Prediction tracking (spec 3.C). Below this many *resolved* dated
+  # predictions, the track-record summary is omitted from Call 2's prompt
+  # entirely rather than forcing a misleadingly small sample into it.
+  predictions_min_for_track_record: 5
 
 # Standing entity watchlist (spec section 4, Agent 1). Seeded into the
 # `entities` table on first run if not already present.
