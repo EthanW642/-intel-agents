@@ -16,6 +16,7 @@ from agents.middle_east.ingest import run_ingest
 from pipeline.analyze import run_analysis
 from pipeline.dedup import dedup_exact, dedup_items, default_embed_fn
 from pipeline.deliver import send_briefing_email, send_ollama_outage_alert
+from pipeline.logging_setup import configure_logging
 from pipeline.memory import init_store, query_memory, write_back
 from pipeline.oil_prices import fetch_oil_snapshot
 from pipeline.ollama_client import OllamaUnavailableError, unload_model
@@ -235,5 +236,5 @@ def run() -> Path | None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     run()

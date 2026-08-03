@@ -9,12 +9,13 @@ import yaml
 from apscheduler.schedulers.blocking import BlockingScheduler
 
 from agents.middle_east.run import run as run_middle_east
+from pipeline.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     cfg = yaml.safe_load(open("config/watchlists.yaml"))["pipeline"]
 
     scheduler = BlockingScheduler()

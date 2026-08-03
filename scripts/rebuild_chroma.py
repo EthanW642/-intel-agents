@@ -20,10 +20,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from pipeline.dedup import default_embed_fn  # noqa: E402
+from pipeline.logging_setup import configure_logging  # noqa: E402
 from store import chroma_client as cc  # noqa: E402
 from store import sqlite_client as db  # noqa: E402
 
-logging.basicConfig(level=logging.INFO)
+configure_logging()
 logger = logging.getLogger("rebuild_chroma")
 
 DOMAIN = "middle_east"

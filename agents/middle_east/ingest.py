@@ -14,6 +14,7 @@ from agents.middle_east.sources import (
     fetch_gdelt,
     load_sources_config,
 )
+from pipeline.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ def run_ingest() -> list[RawItem]:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     result = run_ingest()
     print(f"Ingested {len(result)} raw items")
     for item in result[:5]:

@@ -15,6 +15,7 @@ import logging
 from datetime import date
 
 from agents.middle_east.run import run
+from pipeline.logging_setup import configure_logging
 from pipeline.run_log import RUN_LOG_PATH
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ def already_ran_today(run_date: date | None = None) -> bool:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     if already_ran_today():
         logger.info("Already ran today (%s) — skipping.", date.today().isoformat())
         return
