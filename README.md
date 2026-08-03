@@ -81,12 +81,18 @@ Output lands in `briefings/middle_east_<date>.md`. Structured state lives in
 seen_urls) and `data/chroma/` (vector store) — both are created and seeded
 from `config/watchlists.yaml` on first run.
 
-**Upgrading from a pre-August-2026 checkout?** Delete `data/chroma/` once
-and let it rebuild from subsequent runs' write-backs — the old collection
+**Upgrading from a pre-August-2026 checkout?** The old Chroma collection
 stored its own embedding-function config, which the shared-embedder client
-no longer uses (see `store/chroma_client.py`). Also re-run
-`pip install -r requirements.txt`; the `gdelt` and `pandas` dependencies
-are gone (`pip uninstall gdelt pandas` to reclaim the space).
+no longer uses (see `store/chroma_client.py`) — delete `data/chroma/` and
+rebuild it from the events already in SQLite (no memory is lost):
+
+```bash
+rm -rf data/chroma
+python scripts/rebuild_chroma.py
+```
+
+Also re-run `pip install -r requirements.txt`; the `gdelt` and `pandas`
+dependencies are gone (`pip uninstall gdelt pandas` to reclaim the space).
 
 ### Volume/memory architecture (August 2026 optimization pass)
 
