@@ -6,10 +6,15 @@ which structured feed or RSS source an item came from.
 """
 from __future__ import annotations
 
+import csv
+import io
 import logging
 import re
+import time
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import feedparser
@@ -66,14 +71,12 @@ def _truncate_words(text: str, n: int = 200) -> str:
 
 def _clean_gdelt_actor_name(value) -> str | None:
     """Normalize a GDELT actor-name field, returning None when it's
-    genuinely missing. `value or "unknown actor"`-style checks silently
-    fail on pandas' missing-value representation: a missing cell is a
-    float NaN, and NaN is *truthy* in Python (`bool(float("nan")) is
-    True`), so the `or` never fires and the literal text "nan" ends up
-    formatted straight into the event description — confirmed live
-    2026-07-25, where a real analysis run's input visibly contained the
-    string "nan" as an actor name. `x != x` is the standard NaN
-    self-inequality check (NaN is the only value unequal to itself).
+    genuinely missing. Kept from the pandas era (where a missing cell was a
+    *truthy* float NaN that formatted as the literal string "nan" —
+    confirmed live 2026-07-25 in a real analysis prompt); the direct CSV
+    reader now yields empty strings for missing cells, but the "nan"
+    guard stays because it's cheap and the failure it prevented was ugly.
+    `x != x` is the standard NaN self-inequality check.
     """
     if value is None:
         return None
@@ -86,18 +89,38 @@ def _clean_gdelt_actor_name(value) -> str | None:
 
 
 GDELT_LASTUPDATE_URL = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
+GDELT_EXPORT_URL_TEMPLATE = "http://data.gdeltproject.org/gdeltv2/{stamp}.export.CSV.zip"
+GDELT_DOWNLOAD_WORKERS = 4
+
+# GDELT 2.0 event-export files are headerless tab-separated CSVs with a
+# fixed 61-column layout (the "ADM2-era" codebook). Only the columns the
+# pipeline actually uses are named here; rows whose column count doesn't
+# match are skipped (see _parse_gdelt_export).
+GDELT_EXPORT_NUM_COLUMNS = 61
+GDELT_COL = {
+    "SQLDATE": 1,
+    "Actor1Name": 6,
+    "Actor1CountryCode": 7,
+    "Actor2Name": 16,
+    "Actor2CountryCode": 17,
+    "EventCode": 26,
+    "GoldsteinScale": 30,
+    "NumMentions": 31,
+    "AvgTone": 34,
+    "ActionGeo_CountryCode": 53,
+    "SOURCEURL": 60,
+}
 
 
-def _gdelt_latest_available_date(timeout: float = 15.0) -> date | None:
-    """Ask GDELT's own live feed what its most recent available date is,
-    rather than assuming "today" locally. GDELT's own file timestamps are
-    UTC — see fetch_gdelt's local_today clamp for why that alone isn't
-    enough and this still needs reconciling against the local clock too.
-    Returns None if the live check fails for any reason (network,
+def _gdelt_latest_available_timestamp(timeout: float = 15.0) -> datetime | None:
+    """Ask GDELT's own live feed for its most recent available 15-minute
+    export timestamp (UTC), rather than assuming anything from the local
+    clock. Returns None if the live check fails for any reason (network,
     unexpected response shape); the caller treats that as "skip GDELT this
-    run" rather than guessing, since a wrong guess here reliably
-    reproduces gdeltPyR's "date is in the future" rejection.
-    """
+    run" rather than guessing. Since the pipeline now derives every export
+    file URL from this value, the old gdeltPyR local-clock-vs-UTC clamp
+    problem no longer exists — there is no third-party date validation to
+    appease."""
     try:
         resp = httpx.get(GDELT_LASTUPDATE_URL, timeout=timeout)
         resp.raise_for_status()
@@ -113,127 +136,216 @@ def _gdelt_latest_available_date(timeout: float = 15.0) -> date | None:
         logger.warning(
             "GDELT's lastupdate feed responded but didn't match the expected format "
             "(got: %r); skipping GDELT this run. The response format may have changed "
-            "— update the regex in _gdelt_latest_available_date if this persists.",
+            "— update the regex in _gdelt_latest_available_timestamp if this persists.",
             resp.text[:200],
         )
         return None
-    return datetime.strptime(match.group(1)[:8], "%Y%m%d").date()
+    return datetime.strptime(match.group(1), "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+
+
+def _gdelt_export_stamps(latest: datetime, lookback_days: int) -> list[str]:
+    """Enumerate the 15-minute export-file timestamps covering
+    [latest - lookback_days, latest]. GDELT file URLs are deterministic
+    (data.gdeltproject.org/gdeltv2/YYYYMMDDHHMMSS.export.CSV.zip every 15
+    minutes), so no master file list is needed; a missing file (skipped
+    update) just 404s and is skipped."""
+    stamps: list[str] = []
+    cursor = latest - timedelta(days=lookback_days)
+    # Align to the 15-minute grid.
+    cursor = cursor.replace(minute=(cursor.minute // 15) * 15, second=0, microsecond=0)
+    while cursor <= latest:
+        stamps.append(cursor.strftime("%Y%m%d%H%M%S"))
+        cursor += timedelta(minutes=15)
+    return stamps
+
+
+def _sqldate_to_iso(sqldate: str, fallback: str) -> str:
+    try:
+        return datetime.strptime(sqldate.strip(), "%Y%m%d").date().isoformat()
+    except (ValueError, AttributeError):
+        return fallback
+
+
+def _gdelt_row_to_item(
+    row: dict,
+    actor_codes: set,
+    geo_codes: set,
+    min_mentions: int,
+    min_abs_goldstein: float,
+    fallback_date_iso: str,
+) -> RawItem | None:
+    """Apply the spec 4.1 filters to one GDELT event row (a plain dict keyed
+    by GDELT_COL names) and build the RawItem, or return None to drop it.
+    Pure function — the unit tests exercise the filter semantics here
+    without touching the network."""
+    try:
+        mentions = int(row.get("NumMentions") or 0)
+    except (ValueError, TypeError):
+        mentions = 0
+    try:
+        goldstein = float(row["GoldsteinScale"]) if row.get("GoldsteinScale") not in (None, "") else None
+    except (ValueError, TypeError):
+        goldstein = None
+
+    # Kept if EITHER threshold clears (spec 4.1) — a low-mention but
+    # high-magnitude event (a breaking strike, before wire pickup
+    # accumulates) shouldn't be dropped just because NumMentions is still
+    # low, and vice versa.
+    goldstein_ok = goldstein is not None and abs(goldstein) >= min_abs_goldstein
+    if mentions < min_mentions and not goldstein_ok:
+        return None
+
+    actor_match = row.get("Actor1CountryCode") in actor_codes or row.get("Actor2CountryCode") in actor_codes
+    geo_match = row.get("ActionGeo_CountryCode") in geo_codes
+    if not (actor_match or geo_match):
+        return None
+
+    url = (row.get("SOURCEURL") or "").strip()
+    if not url:
+        return None
+
+    a1_clean = _clean_gdelt_actor_name(row.get("Actor1Name"))
+    a2_clean = _clean_gdelt_actor_name(row.get("Actor2Name"))
+    if a1_clean is None and a2_clean is None:
+        # Neither actor is identifiable — a bilateral event description
+        # with no named party on either side is pure noise for the
+        # analysis stage, not a borderline case.
+        return None
+    a1 = a1_clean or "unknown actor"
+    a2 = a2_clean or "unknown actor"
+
+    event_code = row.get("EventCode", "")
+    desc = (
+        f"GDELT event: {a1} -> {a2} (CAMEO {event_code}), "
+        f"Goldstein={goldstein}, tone={row.get('AvgTone')}, "
+        f"mentions={mentions}"
+    )
+    return RawItem(
+        title=desc,
+        source="GDELT",
+        url=url,
+        published=_sqldate_to_iso(str(row.get("SQLDATE", "")), fallback_date_iso),
+        text=desc,
+        # Tier 1 (structured/primary) per spec 5.1 — GDELT is the
+        # structured event-occurrence source.
+        raw_metadata={"event_code": event_code, "goldstein": goldstein, "tier": 1},
+    )
+
+
+def _parse_gdelt_export(zip_bytes: bytes) -> list[dict]:
+    """Decompress one 15-minute export zip and yield its rows as plain
+    dicts keyed by GDELT_COL names. Rows with an unexpected column count
+    are skipped (schema drift guard)."""
+    rows: list[dict] = []
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        name = zf.namelist()[0]
+        with zf.open(name) as fh:
+            text = io.TextIOWrapper(fh, encoding="utf-8", errors="replace")
+            for cols in csv.reader(text, delimiter="\t"):
+                if len(cols) != GDELT_EXPORT_NUM_COLUMNS:
+                    continue
+                rows.append({key: cols[idx] for key, idx in GDELT_COL.items()})
+    return rows
+
+
+def _fetch_gdelt_export_file(stamp: str, timeout: float = 30.0) -> list[dict]:
+    """Download and parse one export file. A 404 means GDELT skipped that
+    15-minute update — normal, skip quietly. Peak memory is one file
+    (~1-5MB zipped), not the whole day: this replaces gdeltPyR's
+    coverage=True bulk pull, which concatenated every file in the window
+    into a single multi-GB pandas DataFrame before any filtering ran."""
+    url = GDELT_EXPORT_URL_TEMPLATE.format(stamp=stamp)
+    try:
+        resp = httpx.get(url, timeout=timeout, follow_redirects=True)
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        return _parse_gdelt_export(resp.content)
+    except Exception:
+        logger.warning("GDELT export file %s failed to fetch/parse — skipping it", stamp, exc_info=True)
+        return []
 
 
 def fetch_gdelt(cfg: dict) -> list[RawItem]:
-    """Pull GDELT 2.0 events for the region via the gdeltPyR package and
-    filter to Middle East actor/geo country codes (spec 4.1)."""
-    try:
-        import gdelt
-    except ImportError:
-        logger.warning("gdelt package not installed, skipping GDELT ingestion")
-        return []
-
+    """Pull GDELT 2.0 events for the region by streaming the 15-minute
+    export files directly and filtering row-by-row (spec 4.1). Each file is
+    downloaded, filtered, and discarded before the next — memory stays flat
+    regardless of how heavy a news day is."""
     lookback_days = cfg.get("lookback_days", 1)
     actor_codes = set(cfg.get("actor_country_codes", []))
     geo_codes = set(cfg.get("geo_country_codes", []))
     min_mentions = cfg.get("min_num_mentions", 0)
     min_abs_goldstein = cfg.get("min_abs_goldstein", 0)
 
-    end = _gdelt_latest_available_date()
-    if end is None:
-        logger.warning("Skipping GDELT this run — could not determine a valid query date")
+    latest = _gdelt_latest_available_timestamp()
+    if latest is None:
+        logger.warning("Skipping GDELT this run — could not determine the latest available export")
         return []
+    fallback_date_iso = latest.date().isoformat()
 
-    # Confirmed live 2026-07-24/25: GDELT's own file timestamps are UTC
-    # (e.g. 20260725020000 = 2am UTC July 25), but gdeltPyR's own date
-    # validation compares the requested date against LOCAL naive
-    # datetime.now(). On a machine west of UTC in the evening, UTC has
-    # already rolled into the next calendar day while local hasn't — so
-    # GDELT's own live date can itself look "in the future" to gdeltPyR's
-    # local-time check. Clamp to whichever is earlier so the request never
-    # exceeds either reference frame's notion of "today."
-    local_today = datetime.now().date()
-    if end > local_today:
-        logger.info(
-            "GDELT's live date (%s, UTC-based) is ahead of local today (%s) — "
-            "using local today so gdeltPyR's own local-time validation doesn't reject it.",
-            end,
-            local_today,
-        )
-        end = local_today
-    start = end - timedelta(days=lookback_days)
-    date_range = [start.strftime("%Y %m %d"), end.strftime("%Y %m %d")]
-
-    try:
-        gd = gdelt.gdelt(version=2)
-        df = gd.Search(date_range, table=cfg.get("table", "events"), coverage=True, output="df")
-    except Exception:
-        logger.exception("GDELT fetch failed")
-        return []
-
-    if df is None or len(df) == 0:
-        return []
-
-    def row_matches(row) -> bool:
-        actor_match = row.get("Actor1CountryCode") in actor_codes or row.get(
-            "Actor2CountryCode"
-        ) in actor_codes
-        geo_match = row.get("ActionGeo_CountryCode") in geo_codes
-        return actor_match or geo_match
-
+    stamps = _gdelt_export_stamps(latest, lookback_days)
+    started = time.monotonic()
     items: list[RawItem] = []
-    for _, row in df.iterrows():
-        try:
-            # Kept if EITHER threshold clears (spec 4.1) — a low-mention but
-            # high-magnitude event (a breaking strike, before wire pickup
-            # accumulates) shouldn't be dropped just because NumMentions is
-            # still low, and vice versa.
-            mentions = row.get("NumMentions", 0) or 0
-            goldstein = row.get("GoldsteinScale")
-            goldstein_ok = goldstein is not None and abs(goldstein) >= min_abs_goldstein
-            if mentions < min_mentions and not goldstein_ok:
-                continue
-            if not row_matches(row):
-                continue
-            url = row.get("SOURCEURL", "")
-            if not url:
-                continue
-            a1_clean = _clean_gdelt_actor_name(row.get("Actor1Name"))
-            a2_clean = _clean_gdelt_actor_name(row.get("Actor2Name"))
-            if a1_clean is None and a2_clean is None:
-                # Neither actor is identifiable — a bilateral event
-                # description with no named party on either side is pure
-                # noise for the analysis stage, not a borderline case.
-                continue
-            a1 = a1_clean or "unknown actor"
-            a2 = a2_clean or "unknown actor"
-            event_code = row.get("EventCode", "")
-            tone = row.get("AvgTone", 0)
-            desc = (
-                f"GDELT event: {a1} -> {a2} (CAMEO {event_code}), "
-                f"Goldstein={row.get('GoldsteinScale')}, tone={tone}, "
-                f"mentions={row.get('NumMentions')}"
-            )
-            published = str(row.get("SQLDATE", end.strftime("%Y%m%d")))
-            items.append(
-                RawItem(
-                    title=desc,
-                    source="GDELT",
-                    url=url,
-                    published=published,
-                    text=desc,
-                    # Tier 1 (structured/primary) per spec 5.1 — GDELT is the
-                    # structured event-occurrence source.
-                    raw_metadata={"event_code": event_code, "goldstein": row.get("GoldsteinScale"), "tier": 1},
+    rows_seen = 0
+    # URL-level dedup inside GDELT itself: one article routinely generates
+    # many event rows; keep the first (dedup_exact in run.py re-checks
+    # across sources anyway, this just keeps the intermediate list small).
+    seen_urls: set[str] = set()
+
+    with ThreadPoolExecutor(max_workers=GDELT_DOWNLOAD_WORKERS) as pool:
+        for rows in pool.map(_fetch_gdelt_export_file, stamps):
+            rows_seen += len(rows)
+            for row in rows:
+                item = _gdelt_row_to_item(
+                    row, actor_codes, geo_codes, min_mentions, min_abs_goldstein, fallback_date_iso
                 )
-            )
-        except Exception:
-            logger.exception("Failed to parse a GDELT row, skipping it")
-            continue
+                if item is None or item.url in seen_urls:
+                    continue
+                seen_urls.add(item.url)
+                items.append(item)
+
+    logger.info(
+        "GDELT: %d export files scanned (%d rows) -> %d matched items in %.1fs",
+        len(stamps),
+        rows_seen,
+        len(items),
+        time.monotonic() - started,
+    )
     return items
 
 
-def fetch_rss(name: str, url: str, tier: int | None = None, timeout: float = 15.0) -> list[RawItem]:
+def _entry_published_iso(entry) -> tuple[str, datetime | None]:
+    """Return (iso_string, datetime) for a feedparser entry, falling back to
+    the raw feed string (and None) when no parseable date is provided —
+    dates are normalized to ISO at ingest so the events table and prompts
+    never see mixed formats."""
+    parsed = entry.get("published_parsed") or entry.get("updated_parsed")
+    if parsed:
+        try:
+            dt = datetime.fromtimestamp(time.mktime(parsed), tz=timezone.utc)
+            return dt.isoformat(), dt
+        except (ValueError, OverflowError):
+            pass
+    raw = entry.get("published", "") or entry.get("updated", "")
+    return raw or datetime.now(timezone.utc).isoformat(), None
+
+
+def fetch_rss(
+    name: str,
+    url: str,
+    tier: int | None = None,
+    timeout: float = 15.0,
+    max_age_days: int | None = None,
+) -> list[RawItem]:
     """Fetch and parse a single RSS feed. Logs and returns [] on failure so
     one dead feed doesn't take down the whole ingestion run. `tier` (spec
     5.1's source reliability tiering) is carried through in raw_metadata so
-    the analysis prompt can apply the tiering rule."""
+    the analysis prompt can apply the tiering rule.
+
+    Entries older than `max_age_days` are dropped at ingest (entries with
+    no parseable date are kept — fail open, triage handles them): most
+    feeds serve their full recent archive on every request, and without a
+    cutoff a daily run keeps re-processing last week's items forever."""
     try:
         resp = httpx.get(url, timeout=timeout, follow_redirects=True, headers=RSS_REQUEST_HEADERS)
         resp.raise_for_status()
@@ -242,29 +354,38 @@ def fetch_rss(name: str, url: str, tier: int | None = None, timeout: float = 15.
         logger.exception("Failed to fetch RSS feed %s (%s)", name, url)
         return []
 
+    cutoff = None
+    if max_age_days is not None:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+
     items: list[RawItem] = []
     for entry in parsed.entries:
         title = entry.get("title", "")
         link = entry.get("link", "")
         summary = entry.get("summary", "") or entry.get("description", "")
-        published = entry.get("published", "") or entry.get("updated", "")
         if not title or not link:
+            continue
+        published_iso, published_dt = _entry_published_iso(entry)
+        if cutoff is not None and published_dt is not None and published_dt < cutoff:
             continue
         items.append(
             RawItem(
                 title=title,
                 source=name,
                 url=link,
-                published=published,
+                published=published_iso,
                 text=_truncate_words(f"{title}. {summary}"),
                 raw_metadata={"tier": tier} if tier is not None else {},
             )
         )
+    if not items:
+        logger.warning("RSS feed %s returned 0 usable items — dead feed, or everything aged out", name)
     return items
 
 
 def fetch_all_rss(cfg: dict) -> list[RawItem]:
+    max_age_days = cfg.get("rss_max_age_days")
     items: list[RawItem] = []
     for feed in cfg.get("rss_feeds", []):
-        items.extend(fetch_rss(feed["name"], feed["url"], tier=feed.get("tier")))
+        items.extend(fetch_rss(feed["name"], feed["url"], tier=feed.get("tier"), max_age_days=max_age_days))
     return items

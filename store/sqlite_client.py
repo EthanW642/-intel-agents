@@ -1,12 +1,14 @@
 """SQLite structured store (spec section 3.B): entities, events,
-relationships, theses, and predictions. Cost tracking lives in
-data/api_cost_log.csv (pipeline/analyze.py), not this store.
+relationships, theses, predictions, and the seen_urls ingest dedup table.
+Cost tracking lives in data/api_cost_log.csv (pipeline/analyze.py), not
+this store.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
@@ -266,3 +268,42 @@ def get_recent_resolved_predictions(
         """,
         (domain, limit),
     ).fetchall()
+def _url_hash(url: str) -> str:
+    return hashlib.sha256(url.strip().encode("utf-8")).hexdigest()
+
+
+def filter_unseen(conn: sqlite3.Connection, domain: str, urls: list[str]) -> set[str]:
+    """Return the subset of `urls` NOT already recorded in seen_urls."""
+    unseen: set[str] = set()
+    for url in set(urls):
+        row = conn.execute(
+            "SELECT 1 FROM seen_urls WHERE domain = ? AND url_hash = ?",
+            (domain, _url_hash(url)),
+        ).fetchone()
+        if row is None:
+            unseen.add(url)
+    return unseen
+
+
+def mark_seen(conn: sqlite3.Connection, domain: str, urls: list[str]) -> None:
+    """Record URLs as processed. Called only at the end of a fully
+    successful run — a crash or abort mid-run leaves them unrecorded, so
+    they're simply reprocessed next time (nothing lost)."""
+    ts = now_iso()
+    conn.executemany(
+        """
+        INSERT INTO seen_urls (domain, url_hash, url, first_seen)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(domain, url_hash) DO NOTHING
+        """,
+        [(domain, _url_hash(url), url, ts) for url in set(urls)],
+    )
+    conn.commit()
+
+
+def prune_seen(conn: sqlite3.Connection, domain: str, retention_days: int) -> None:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+    conn.execute(
+        "DELETE FROM seen_urls WHERE domain = ? AND first_seen < ?", (domain, cutoff)
+    )
+    conn.commit()

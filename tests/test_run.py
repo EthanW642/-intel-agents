@@ -14,16 +14,29 @@ import pytest
 from pipeline.ollama_client import OllamaUnavailableError
 
 
+class FakeItem:
+    """Minimal stand-in for RawItem — run.py touches .url (seen-URL
+    filter/mark) and .raw_metadata (analysis cap sort)."""
+
+    def __init__(self, url="http://x/1"):
+        self.url = url
+        self.raw_metadata = {}
+
+
 @pytest.fixture
 def mocked_run_deps(monkeypatch):
     import agents.middle_east.run as run_module
 
     monkeypatch.setattr(run_module, "init_store", lambda *a, **k: (MagicMock(), MagicMock()))
-    monkeypatch.setattr(run_module, "run_ingest", lambda: ["item"])
+    monkeypatch.setattr(run_module, "run_ingest", lambda: [FakeItem()])
+    monkeypatch.setattr(run_module, "dedup_exact", lambda items: items)
     monkeypatch.setattr(run_module, "dedup_items", lambda items, **k: items)
     monkeypatch.setattr(run_module.db, "get_entities", lambda *a, **k: [])
     monkeypatch.setattr(run_module.db, "get_active_theses", lambda *a, **k: [])
     monkeypatch.setattr(run_module.db, "get_pending_predictions", lambda *a, **k: [])
+    monkeypatch.setattr(run_module.db, "filter_unseen", lambda conn, domain, urls: set(urls))
+    monkeypatch.setattr(run_module.db, "mark_seen", MagicMock())
+    monkeypatch.setattr(run_module.db, "prune_seen", MagicMock())
     monkeypatch.setattr(run_module, "resolve_predictions", lambda *a, **k: [])
     monkeypatch.setattr(run_module, "unload_model", MagicMock())
     monkeypatch.setattr(run_module, "write_run_log_row", MagicMock())
@@ -178,3 +191,46 @@ def test_ollama_model_unloaded_after_prediction_resolution_before_analysis(mocke
     run_module.run()
 
     assert call_order == ["resolve_predictions", "unload_model", "run_analysis"]
+
+
+def test_seen_urls_marked_only_on_success_not_on_outage(mocked_run_deps, monkeypatch, tmp_path):
+    # The seen-URL store must only record items after a fully successful
+    # run: marking them on the Ollama-outage abort path would mean those
+    # items are never triaged/analyzed at all — silently lost instead of
+    # simply reprocessed by the next run.
+    run_module = mocked_run_deps
+    monkeypatch.setattr(
+        run_module, "triage_items", MagicMock(side_effect=OllamaUnavailableError("outage"))
+    )
+    monkeypatch.setattr(run_module, "run_analysis", MagicMock())
+    monkeypatch.setattr(run_module, "send_ollama_outage_alert", MagicMock())
+    monkeypatch.delenv("GMAIL_ADDRESS", raising=False)
+    monkeypatch.delenv("GMAIL_APP_PASSWORD", raising=False)
+
+    assert run_module.run() is None
+    run_module.db.mark_seen.assert_not_called()
+
+    # Success path: marks exactly the new (post-seen-filter) items.
+    monkeypatch.setattr(run_module, "triage_items", MagicMock(return_value=[]))
+    monkeypatch.setattr(run_module, "query_memory", lambda *a, **k: {})
+    monkeypatch.setattr(
+        run_module,
+        "run_analysis",
+        lambda *a, **k: {
+            "effort": "low",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+            "cost_usd": 0.0,
+            "write_back": {},
+            "markdown": "# Briefing",
+        },
+    )
+    monkeypatch.setattr(run_module, "write_back", lambda *a, **k: {})
+    briefing_path = tmp_path / "briefing.md"
+    briefing_path.write_text("# Briefing")
+    monkeypatch.setattr(run_module, "render_briefing", lambda *a, **k: briefing_path)
+
+    assert run_module.run() == briefing_path
+    run_module.db.mark_seen.assert_called_once()
+    marked_urls = run_module.db.mark_seen.call_args[0][2]
+    assert marked_urls == ["http://x/1"]
+    run_module.db.prune_seen.assert_called_once()

@@ -112,17 +112,23 @@ def query_memory(
     n_results: int,
     dormancy_window_days: int,
     predictions_min_for_track_record: int,
+    embed_fn,
     run_date: date | None = None,
 ) -> dict:
     """Retrieve the context the analysis stage needs: related past events
     (Chroma), active theses, the current entity graph (SQLite), and the
     prediction track record — after running the mechanical dormancy sweep
-    so active_theses reflects today's true state."""
+    so active_theses reflects today's true state.
+
+    `embed_fn` is the shared embedder from pipeline.dedup — Chroma no
+    longer owns its own copy of the model."""
     run_date = run_date or date.today()
     sweep_dormant_theses(conn, domain, dormancy_window_days, run_date)
 
     query_text = " ".join(f"{item.title}. {item.text}" for item in triaged_items)[:4000]
-    related_events = cc.query_related(collection, query_text, n_results) if query_text else []
+    related_events = (
+        cc.query_related(collection, embed_fn([query_text])[0], n_results) if query_text else []
+    )
 
     active_theses = [dict(row) for row in db.get_active_theses(conn, domain)]
     entities = [dict(row) for row in db.get_entities(conn, domain)]
@@ -136,7 +142,9 @@ def query_memory(
     }
 
 
-def write_back(conn: sqlite3.Connection, collection, domain: str, analysis_json: dict, run_date: str) -> dict:
+def write_back(
+    conn: sqlite3.Connection, collection, domain: str, analysis_json: dict, run_date: str, embed_fn
+) -> dict:
     """Persist Sonnet's structured JSON write-back block to SQLite + Chroma.
     Returns a summary dict of what was written, for the run log.
 
@@ -184,6 +192,9 @@ def write_back(conn: sqlite3.Connection, collection, domain: str, analysis_json:
             malformed_skipped += 1
 
     new_events_written = 0
+    chroma_ids: list[str] = []
+    chroma_summaries: list[str] = []
+    chroma_metadatas: list[dict] = []
     for evt in analysis_json.get("new_events", []):
         try:
             entity_ids = [resolve_entity(name) for name in evt.get("entities", [])]
@@ -197,16 +208,20 @@ def write_back(conn: sqlite3.Connection, collection, domain: str, analysis_json:
                 evt.get("source_urls", []),
                 entity_ids,
             )
-            cc.add_event(
-                collection,
-                event_id=f"{domain}_{event_id}",
-                summary=evt["description"],
-                metadata={"date": evt["date"], "event_type": evt.get("event_type", "unspecified"), "sqlite_event_id": event_id},
+            chroma_ids.append(f"{domain}_{event_id}")
+            chroma_summaries.append(evt["description"])
+            chroma_metadatas.append(
+                {"date": evt["date"], "event_type": evt.get("event_type", "unspecified"), "sqlite_event_id": event_id}
             )
             new_events_written += 1
         except (KeyError, TypeError, ValueError) as exc:
             logger.warning("Skipping malformed new_events entry (%s): %r", exc, evt)
             malformed_skipped += 1
+
+    if chroma_ids:
+        # One batched encode + upsert with the shared embedder, instead of
+        # per-event calls through a second resident model.
+        cc.add_events(collection, chroma_ids, chroma_summaries, embed_fn(chroma_summaries), chroma_metadatas)
 
     thesis_updates_applied = 0
     thesis_updates_rejected = 0

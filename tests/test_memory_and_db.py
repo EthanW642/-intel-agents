@@ -17,14 +17,19 @@ class FakeChromaCollection:
     def __init__(self):
         self.upserted = []
 
-    def upsert(self, ids, documents, metadatas):
-        self.upserted.append((ids, documents, metadatas))
+    def upsert(self, ids, documents, embeddings, metadatas):
+        self.upserted.append((ids, documents, embeddings, metadatas))
 
     def count(self):
         return len(self.upserted)
 
-    def query(self, query_texts, n_results):
+    def query(self, query_embeddings, n_results):
         return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+
+def fake_embed(texts):
+    # Deterministic stand-in for the shared sentence-transformers embedder.
+    return [[0.1, 0.2, 0.3] for _ in texts]
 
 
 # ---- dormancy sweep ----
@@ -86,7 +91,7 @@ def test_write_back_rejects_new_thesis_with_fewer_than_2_events(conn):
         ],
         "new_predictions": [],
     }
-    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01")
+    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01", fake_embed)
 
     assert summary["thesis_updates_rejected"] == 1
     assert summary["thesis_updates_applied"] == 0
@@ -111,7 +116,7 @@ def test_write_back_accepts_new_thesis_with_2_distinct_events(conn):
         ],
         "new_predictions": [],
     }
-    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01")
+    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01", fake_embed)
 
     assert summary["thesis_updates_applied"] == 1
     assert summary["thesis_updates_rejected"] == 0
@@ -136,7 +141,7 @@ def test_write_back_rejects_duplicate_events_counted_as_two(conn):
         ],
         "new_predictions": [],
     }
-    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01")
+    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01", fake_embed)
     assert summary["thesis_updates_rejected"] == 1
 
 
@@ -149,7 +154,7 @@ def test_write_back_writes_new_predictions(conn):
         "thesis_updates": [],
         "new_predictions": [{"claim": "X will happen", "target_date": "2026-04-01", "source_note": ""}],
     }
-    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01")
+    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01", fake_embed)
     assert summary["new_predictions"] == 1
     pending = db.get_pending_predictions(conn, "middle_east")
     assert len(pending) == 1
@@ -188,7 +193,7 @@ def test_write_back_skips_malformed_entity_without_crashing(conn):
         "thesis_updates": [],
         "new_predictions": [],
     }
-    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01")
+    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01", fake_embed)
 
     assert summary["new_entities"] == 1  # only the valid one
     assert summary["malformed_entries_skipped"] == 1
@@ -205,7 +210,7 @@ def test_write_back_skips_malformed_relationship_without_crashing(conn):
         "thesis_updates": [],
         "new_predictions": [],
     }
-    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01")
+    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01", fake_embed)
 
     assert summary["new_relationships"] == 0
     assert summary["malformed_entries_skipped"] == 1
@@ -220,7 +225,7 @@ def test_write_back_skips_malformed_event_without_crashing(conn):
         "thesis_updates": [],
         "new_predictions": [],
     }
-    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01")
+    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01", fake_embed)
 
     assert summary["new_events"] == 1  # only the valid one
     assert summary["malformed_entries_skipped"] == 1
@@ -235,7 +240,7 @@ def test_write_back_skips_malformed_thesis_update_without_crashing(conn):
         "thesis_updates": [{"status": "reinforced", "note": "missing the title field"}],
         "new_predictions": [],
     }
-    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01")
+    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01", fake_embed)
 
     assert summary["thesis_updates_applied"] == 0
     assert summary["malformed_entries_skipped"] == 1
@@ -253,8 +258,38 @@ def test_write_back_one_malformed_entry_does_not_block_the_rest(conn):
         "thesis_updates": [],
         "new_predictions": [{"claim": "a real prediction", "target_date": None, "source_note": ""}],
     }
-    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01")
+    summary = memory.write_back(conn, fake_collection, "middle_east", analysis_json, "2026-03-01", fake_embed)
 
     assert summary["malformed_entries_skipped"] == 1
     assert summary["new_events"] == 1
     assert summary["new_predictions"] == 1
+
+
+# ---- seen_urls ingest dedup store ----
+
+
+def test_filter_unseen_and_mark_seen_roundtrip(conn):
+    urls = ["https://a.com/1", "https://a.com/2", "https://a.com/3"]
+    assert db.filter_unseen(conn, "middle_east", urls) == set(urls)
+
+    db.mark_seen(conn, "middle_east", urls[:2])
+    assert db.filter_unseen(conn, "middle_east", urls) == {"https://a.com/3"}
+
+
+def test_mark_seen_is_idempotent(conn):
+    db.mark_seen(conn, "middle_east", ["https://a.com/1"])
+    db.mark_seen(conn, "middle_east", ["https://a.com/1"])  # no conflict error
+    assert db.filter_unseen(conn, "middle_east", ["https://a.com/1"]) == set()
+
+
+def test_seen_urls_are_domain_scoped(conn):
+    db.mark_seen(conn, "middle_east", ["https://a.com/1"])
+    assert db.filter_unseen(conn, "other_domain", ["https://a.com/1"]) == {"https://a.com/1"}
+
+
+def test_prune_seen_removes_old_rows(conn):
+    db.mark_seen(conn, "middle_east", ["https://a.com/1"])
+    db.prune_seen(conn, "middle_east", retention_days=90)  # fresh row survives
+    assert db.filter_unseen(conn, "middle_east", ["https://a.com/1"]) == set()
+    db.prune_seen(conn, "middle_east", retention_days=0)  # everything older than "now" goes
+    assert db.filter_unseen(conn, "middle_east", ["https://a.com/1"]) == {"https://a.com/1"}

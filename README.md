@@ -7,8 +7,9 @@ and email delivery. See the full build spec for later phases.
 ## Architecture (this phase)
 
 ```
-Stage 1  INGEST         agents/middle_east/{sources.py,ingest.py}   GDELT + RSS
-Stage 2a DEDUP           pipeline/dedup.py                          local embeddings (all-MiniLM-L6-v2)
+Stage 1  INGEST         agents/middle_east/{sources.py,ingest.py}   GDELT (direct 15-min export files) + RSS
+Stage 2a SEEN/DEDUP      store (seen_urls) + pipeline/dedup.py      already-seen URL filter, exact URL dedup,
+                                                                    then local embeddings (all-MiniLM-L6-v2)
 Stage 2b TRIAGE          pipeline/triage.py                         local Ollama (qwen2.5:7b) — no API call
 Stage 2c PREDICTION RES. pipeline/predictions.py                    local Ollama — checks pending predictions, no API call
 Stage 3  MEMORY QUERY    pipeline/memory.py                         Chroma + SQLite; dormancy sweep, track record
@@ -76,9 +77,42 @@ python -m agents.middle_east.run
 ```
 
 Output lands in `briefings/middle_east_<date>.md`. Structured state lives in
-`data/middle_east.sqlite3` (entities/events/relationships/theses/predictions)
-and `data/chroma/` (vector store) — both are created and seeded from
-`config/watchlists.yaml` on first run.
+`data/middle_east.sqlite3` (entities/events/relationships/theses/predictions/
+seen_urls) and `data/chroma/` (vector store) — both are created and seeded
+from `config/watchlists.yaml` on first run.
+
+**Upgrading from a pre-August-2026 checkout?** Delete `data/chroma/` once
+and let it rebuild from subsequent runs' write-backs — the old collection
+stored its own embedding-function config, which the shared-embedder client
+no longer uses (see `store/chroma_client.py`). Also re-run
+`pip install -r requirements.txt`; the `gdelt` and `pandas` dependencies
+are gone (`pip uninstall gdelt pandas` to reclaim the space).
+
+### Volume/memory architecture (August 2026 optimization pass)
+
+The pipeline is shaped as a funnel where free operations do the killing
+before anything expensive runs — the fix for real runs that ingested
+~10,000 raw items, held multi-GB pandas frames, and pushed 200+ items into
+the paid Sonnet call:
+
+- **GDELT** is fetched by streaming each 15-minute export file directly
+  (download → filter → discard, ~4 in flight), replacing gdeltPyR's
+  coverage=True bulk pull that concatenated the whole window into one
+  multi-GB DataFrame before filtering. Same spec-4.1 filter semantics,
+  verified by the same tests (`tests/test_gdelt_filter.py`).
+- **seen_urls** (SQLite) drops anything a previous successful run already
+  processed, and RSS entries older than `rss_max_age_days` age out at
+  ingest — steady-state daily volume is genuinely-new items only. URLs are
+  marked seen only after a fully successful run, so crashes and the
+  Ollama-outage abort reprocess rather than lose items.
+- **Exact URL dedup** (free) runs before embedding; the near-dup pass
+  compares incrementally against kept items instead of building an
+  n x n similarity matrix (~800MB at 10k items).
+- **One embedding model**: dedup, memory query, and Chroma write-back all
+  share the single sentence-transformers instance in `pipeline/dedup.py`
+  (Chroma previously loaded a second copy).
+- **`analysis_max_items`** caps what reaches Sonnet (top triage scores
+  kept), bounding cost on heavy days and whenever triage fails open.
 
 To run on the daily schedule instead of once (default 5:30am local, per spec):
 

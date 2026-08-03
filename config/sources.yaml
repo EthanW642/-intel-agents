@@ -11,11 +11,16 @@
 domain: middle_east
 
 gdelt:
-  # Handled via the `gdelt` PyPI package (gdeltPyR), which pulls the GDELT
-  # 2.0 Event Database directly from data.gdeltproject.org — no API key.
-  table: events
+  # Fetched directly from data.gdeltproject.org's 15-minute export files
+  # (no API key, no gdeltPyR/pandas): agents/middle_east/sources.py
+  # enumerates the deterministic file URLs for the lookback window from
+  # GDELT's own lastupdate feed, then downloads, filters, and discards
+  # each file one at a time. Peak memory is one ~1-5MB file instead of the
+  # old gdeltPyR coverage=True path, which concatenated the whole window
+  # into a single multi-GB pandas DataFrame before any filtering ran.
   # How many days back to pull on each run (GDELT 2.0 updates every 15 min;
-  # a 1-day window covers a daily-cadence agent run with margin).
+  # a 1-day window covers a daily-cadence agent run with margin — the
+  # seen_urls store dedupes the overlap between consecutive runs).
   lookback_days: 1
   # Actor1CountryCode / Actor2CountryCode use CAMEO 3-letter country codes,
   # which for current states match ISO 3166-1 alpha-3. An event is kept if
@@ -89,6 +94,12 @@ gdelt:
   # kept if EITHER threshold clears.
   min_num_mentions: 10
   min_abs_goldstein: 5.0  # GoldsteinScale runs -10..+10; 5 = a clearly significant event, not routine chatter
+
+# Drop RSS entries older than this many days at ingest (entries with no
+# parseable date are kept and left for triage). Most feeds re-serve their
+# full recent archive on every request; combined with the seen_urls store
+# this keeps daily volume to genuinely-new items only.
+rss_max_age_days: 3
 
 rss_feeds:
   # Narrative/context layer. Two source families here, deliberately kept

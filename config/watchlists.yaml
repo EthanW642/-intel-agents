@@ -34,8 +34,23 @@ pipeline:
   # scoring task, so a smaller model should hold up fine, but that's
   # worth confirming against real output rather than assuming — watch the
   # first few runs on this model.
+  # (If 7b still feels heavy or slow on a given day's volume, qwen2.5:3b
+  # (~2GB) is the next step down — triage held up fine on it in mocked
+  # testing, but that's unverified against real output; same watch-the-
+  # first-runs caveat as above.)
   triage_model: qwen2.5:7b
   ollama_host: http://localhost:11434
+
+  # Hard cap on items forwarded to the paid Sonnet call (top triage scores
+  # kept). Real runs have sent 200+ triaged items into analysis; the cap
+  # bounds input/thinking cost on heavy days and also acts as the cost
+  # containment when triage fails open (parse fallback pass-throughs).
+  # Set generously — the seen-URL filter (store/schema.sql: seen_urls)
+  # should keep steady-state volume well under it.
+  analysis_max_items: 100
+  # How long processed URLs stay in the seen_urls ingest-dedup table
+  # before being pruned.
+  seen_url_retention_days: 90
 
   # Sonnet model for Stage 4 — the ONLY stage that calls the Anthropic API.
   analysis_model: claude-sonnet-5

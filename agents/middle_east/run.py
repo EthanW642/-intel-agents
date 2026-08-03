@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 from agents.middle_east.ingest import run_ingest
 from pipeline.analyze import run_analysis
-from pipeline.dedup import dedup_items
+from pipeline.dedup import dedup_exact, dedup_items, default_embed_fn
 from pipeline.deliver import send_briefing_email, send_ollama_outage_alert
 from pipeline.memory import init_store, query_memory, write_back
 from pipeline.oil_prices import fetch_oil_snapshot
@@ -53,8 +53,17 @@ def run() -> Path | None:
         if not raw_items:
             logger.warning("No raw items ingested this run (check network/source config)")
 
+        # Drop anything a previous successful run already processed — the
+        # single biggest volume reducer for a daily agent — then collapse
+        # exact URL duplicates for free before any model touches the data.
+        unseen_urls = db.filter_unseen(conn, DOMAIN, [item.url for item in raw_items])
+        new_items = [item for item in raw_items if item.url in unseen_urls]
+        logger.info("Seen-URL filter: %d raw -> %d new items", len(raw_items), len(new_items))
+        new_items = dedup_exact(new_items)
+        log_row["items_new"] = len(new_items)
+
         logger.info("Stage 2a: dedup")
-        deduped = dedup_items(raw_items, similarity_threshold=pipeline_cfg["dedup_similarity_threshold"])
+        deduped = dedup_items(new_items, similarity_threshold=pipeline_cfg["dedup_similarity_threshold"])
         log_row["items_deduped"] = len(deduped)
 
         logger.info("Stage 2b: triage")
@@ -69,6 +78,17 @@ def run() -> Path | None:
             score_threshold=pipeline_cfg["triage_score_threshold"],
         )
         log_row["items_triaged_survived"] = len(triaged)
+
+        # Hard cap on what reaches the paid analysis call: keep the
+        # top-scored items. Bounds Sonnet input/thinking cost even on a
+        # very heavy day (real runs have sent 200+ items) and even when
+        # triage falls back to pass-through scores.
+        max_items = pipeline_cfg.get("analysis_max_items")
+        if max_items and len(triaged) > max_items:
+            triaged.sort(key=lambda item: item.raw_metadata.get("triage_score", 0), reverse=True)
+            logger.info("Capping analysis input: %d triaged -> top %d by score", len(triaged), max_items)
+            triaged = triaged[:max_items]
+            log_row["items_triaged_survived"] = f"{log_row['items_triaged_survived']} (capped to {max_items})"
 
         logger.info("Stage 2c: prediction resolution check (local, no API cost)")
         pending = [dict(row) for row in db.get_pending_predictions(conn, DOMAIN)]
@@ -103,6 +123,7 @@ def run() -> Path | None:
             pipeline_cfg["memory_retrieval_count"],
             dormancy_window_days=pipeline_cfg["dormancy_window_days"],
             predictions_min_for_track_record=pipeline_cfg["predictions_min_for_track_record"],
+            embed_fn=default_embed_fn,
             run_date=run_date,
         )
 
@@ -137,7 +158,9 @@ def run() -> Path | None:
         )
 
         logger.info("Stage 5: write-back + render")
-        write_summary = write_back(conn, collection, DOMAIN, result["write_back"], run_date.isoformat())
+        write_summary = write_back(
+            conn, collection, DOMAIN, result["write_back"], run_date.isoformat(), default_embed_fn
+        )
         log_row.update(write_summary)
         briefing_path = render_briefing(DOMAIN, result["markdown"], run_date)
 
@@ -162,6 +185,14 @@ def run() -> Path | None:
                     "email_error": email_result["error"] or "",
                 }
             )
+
+        # Only mark URLs seen after a fully successful run — a crash or the
+        # Ollama-outage abort above leaves them unrecorded, so those items
+        # are simply reprocessed next time (nothing lost). Marks everything
+        # that entered the pipeline this run (including items dedup/triage
+        # dropped: they were considered, and shouldn't be re-considered).
+        db.mark_seen(conn, DOMAIN, [item.url for item in new_items])
+        db.prune_seen(conn, DOMAIN, pipeline_cfg.get("seen_url_retention_days", 90))
 
         logger.info(
             "Run complete. Briefing at %s. Cost: $%.4f (effort=%s)",

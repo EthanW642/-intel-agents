@@ -68,6 +68,19 @@ CREATE TABLE IF NOT EXISTS predictions (
     created_at TEXT NOT NULL
 );
 
+-- URLs already processed by a previous successful run. Filtering against
+-- this table at ingest is the single biggest volume reducer for a daily
+-- agent: most feeds re-serve their recent archive on every request, and
+-- without this every run re-embeds/re-triages yesterday's items. Rows are
+-- pruned after `seen_url_retention_days` (config/watchlists.yaml).
+CREATE TABLE IF NOT EXISTS seen_urls (
+    domain TEXT NOT NULL,
+    url_hash TEXT NOT NULL,          -- sha256 of the URL
+    url TEXT NOT NULL,
+    first_seen TEXT NOT NULL,        -- ISO timestamp
+    PRIMARY KEY (domain, url_hash)
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_domain_date ON events(domain, date);
 CREATE INDEX IF NOT EXISTS idx_relationships_entities ON relationships(entity_a_id, entity_b_id);
 CREATE INDEX IF NOT EXISTS idx_theses_domain_status ON theses(domain, status);
