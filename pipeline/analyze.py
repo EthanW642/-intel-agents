@@ -161,11 +161,41 @@ def _format_hotspots_section(hotspots: list[dict] | None) -> str:
     )
 
 
+def _format_crs_section(crs_snapshot: list[dict] | None) -> str:
+    """Renders recently-updated, Middle East-relevant CRS report summaries
+    (pipeline/crs_reports.py) as a prompt section — standing IC/
+    Congressional analytical context, not a today's-news claim (see the
+    un-tiered category in the system prompt's step 1). Omitted entirely
+    when unavailable, same pattern as the oil snapshot."""
+    if not crs_snapshot:
+        return ""
+    lines = [
+        f"- \"{r['title']}\" ({r['publish_date'] or 'undated'}): {r['summary']}" for r in crs_snapshot
+    ]
+    return (
+        "## Congressional Research Service reports (recent, Middle East-relevant)\n"
+        + "\n".join(lines)
+        + "\n\n"
+    )
+
+
+def _format_odni_section(odni_excerpt: str | None) -> str:
+    """Renders the manually-curated ODNI Annual Threat Assessment excerpt
+    (pipeline/odni_assessment.py) as a prompt section — standing IC
+    context, updated roughly once a year. Omitted entirely when not
+    populated, same pattern as the oil snapshot."""
+    if not odni_excerpt:
+        return ""
+    return "## ODNI Annual Threat Assessment excerpt\n" + odni_excerpt.strip() + "\n\n"
+
+
 def _build_user_prompt(
     triaged_items: list,
     memory_context: dict,
     oil_snapshot: dict | None = None,
     hotspots: list[dict] | None = None,
+    crs_snapshot: list[dict] | None = None,
+    odni_excerpt: str | None = None,
 ) -> str:
     items_block = "\n".join(
         f"- [{item.source} (Tier {item.raw_metadata.get('tier', '?')}), {item.published}] {item.title}\n"
@@ -198,7 +228,10 @@ def _build_user_prompt(
         f"{len(related_events)} related past event(s) retrieved."
     )
     if not active_theses and not related_events:
-        memory_status += " This looks like a cold start — say so plainly in section 2, do not manufacture continuity."
+        memory_status += (
+            " This looks like a cold start — say so plainly in whichever section covers it, "
+            "do not manufacture continuity."
+        )
 
     track_record = memory_context.get("track_record_summary")
     track_record_block = (
@@ -207,6 +240,8 @@ def _build_user_prompt(
 
     oil_block = _format_oil_snapshot(oil_snapshot)
     hotspots_block = _format_hotspots_section(hotspots)
+    crs_block = _format_crs_section(crs_snapshot)
+    odni_block = _format_odni_section(odni_excerpt)
 
     return (
         f"{memory_status}\n\n"
@@ -216,6 +251,8 @@ def _build_user_prompt(
         f"## Retrieved related past events\n{related_block}\n\n"
         f"{oil_block}"
         f"{hotspots_block}"
+        f"{crs_block}"
+        f"{odni_block}"
         f"{track_record_block}"
     )
 
@@ -260,6 +297,8 @@ def run_analysis(
     api_key: str | None = None,
     oil_snapshot: dict | None = None,
     hotspots: list[dict] | None = None,
+    crs_snapshot: list[dict] | None = None,
+    odni_excerpt: str | None = None,
 ) -> dict:
     """Single Sonnet call with adaptive thinking, scaled effort. Returns
     {"markdown": full response text, "write_back": parsed JSON block,
@@ -269,7 +308,9 @@ def run_analysis(
     effort = compute_effort(len(triaged_items), len(memory_context["active_theses"]), pipeline_cfg)
 
     system_prompt = _load_system_prompt()
-    user_prompt = _build_user_prompt(triaged_items, memory_context, oil_snapshot, hotspots)
+    user_prompt = _build_user_prompt(
+        triaged_items, memory_context, oil_snapshot, hotspots, crs_snapshot, odni_excerpt
+    )
 
     def _call() -> anthropic.types.Message:
         with client.messages.stream(

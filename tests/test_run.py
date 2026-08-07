@@ -234,3 +234,40 @@ def test_seen_urls_marked_only_on_success_not_on_outage(mocked_run_deps, monkeyp
     marked_urls = run_module.db.mark_seen.call_args[0][2]
     assert marked_urls == ["http://x/1"]
     run_module.db.prune_seen.assert_called_once()
+
+
+def test_crs_and_odni_context_fetched_and_passed_to_analysis(mocked_run_deps, monkeypatch, tmp_path):
+    # Stage 3d/3e (added 2026-08-06): CRS report summaries and the ODNI
+    # excerpt are fetched independently and threaded through to
+    # run_analysis as its own kwargs, same "optional context, degrade
+    # gracefully" pattern as the oil/hotspots fetches.
+    run_module = mocked_run_deps
+    monkeypatch.setattr(run_module, "triage_items", MagicMock(return_value=[]))
+    monkeypatch.setattr(run_module, "query_memory", lambda *a, **k: {"active_theses": []})
+    fake_crs_snapshot = [{"title": "Iran Sanctions", "summary": "s", "publish_date": "2026-08-01", "url": "u"}]
+    monkeypatch.setattr(run_module, "fetch_crs_snapshot", lambda *a, **k: fake_crs_snapshot)
+    monkeypatch.setattr(run_module, "load_odni_excerpt", lambda: "Iran remains a persistent threat.")
+
+    run_analysis_mock = MagicMock(
+        return_value={
+            "effort": "low",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+            "cost_usd": 0.0,
+            "write_back": {},
+            "markdown": "# Briefing",
+        }
+    )
+    monkeypatch.setattr(run_module, "run_analysis", run_analysis_mock)
+    monkeypatch.setattr(run_module, "write_back", lambda *a, **k: {})
+    briefing_path = tmp_path / "briefing.md"
+    briefing_path.write_text("# Briefing")
+    monkeypatch.setattr(run_module, "render_briefing", lambda *a, **k: briefing_path)
+    monkeypatch.delenv("GMAIL_ADDRESS", raising=False)
+    monkeypatch.delenv("GMAIL_APP_PASSWORD", raising=False)
+
+    run_module.run()
+
+    run_analysis_mock.assert_called_once()
+    _, call_kwargs = run_analysis_mock.call_args
+    assert call_kwargs["crs_snapshot"] == fake_crs_snapshot
+    assert call_kwargs["odni_excerpt"] == "Iran remains a persistent threat."

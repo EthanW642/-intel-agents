@@ -14,10 +14,12 @@ from dotenv import load_dotenv
 
 from agents.middle_east.ingest import run_ingest
 from pipeline.analyze import run_analysis
+from pipeline.crs_reports import fetch_crs_snapshot
 from pipeline.dedup import dedup_exact, dedup_items, default_embed_fn
 from pipeline.deliver import send_briefing_email, send_ollama_outage_alert
 from pipeline.logging_setup import configure_logging
 from pipeline.memory import init_store, query_memory, write_back
+from pipeline.odni_assessment import load_odni_excerpt
 from pipeline.oil_prices import fetch_oil_snapshot
 from pipeline.ollama_client import OllamaUnavailableError, unload_model
 from pipeline.predictions import resolve_predictions
@@ -138,6 +140,16 @@ def run() -> Path | None:
         if hotspots is None:
             logger.info("No satellite hotspot data this run (FIRMS_MAP_KEY unset or fetch failed) — omitted from prompt.")
 
+        logger.info("Stage 3d: CRS report summaries (Congress.gov — free, no cost either way)")
+        crs_snapshot = fetch_crs_snapshot(os.environ.get("CONGRESS_API_KEY"))
+        if crs_snapshot is None:
+            logger.info("No CRS report snapshot this run (CONGRESS_API_KEY unset or fetch failed) — omitted from prompt.")
+
+        logger.info("Stage 3e: ODNI Annual Threat Assessment excerpt (local file, no cost either way)")
+        odni_excerpt = load_odni_excerpt()
+        if odni_excerpt is None:
+            logger.info("No ODNI excerpt this run (config/odni_ata_excerpt.md not yet populated) — omitted from prompt.")
+
         logger.info("Stage 4: deep analysis (Sonnet — the only API call)")
         result = run_analysis(
             triaged,
@@ -148,6 +160,8 @@ def run() -> Path | None:
             pipeline_cfg=pipeline_cfg,
             oil_snapshot=oil_snapshot,
             hotspots=hotspots,
+            crs_snapshot=crs_snapshot,
+            odni_excerpt=odni_excerpt,
         )
         log_row.update(
             {

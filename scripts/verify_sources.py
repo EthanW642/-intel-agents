@@ -19,7 +19,7 @@ import httpx
 import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from agents.middle_east.sources import RSS_REQUEST_HEADERS  # noqa: E402 — see sys.path insert above
+from agents.middle_east.sources import ASAM_API_BASE, RSS_REQUEST_HEADERS  # noqa: E402 — see sys.path insert above
 
 ROOT = Path(__file__).parent.parent
 SOURCES_PATH = ROOT / "config" / "sources.yaml"
@@ -79,6 +79,21 @@ def _check_gdelt(timeout: float = 15.0) -> tuple[bool, str]:
     return True, "data.gdeltproject.org reachable and returned an update listing"
 
 
+def _check_asam(timeout: float = 20.0) -> tuple[bool, str]:
+    """NGA/MSI ASAM is UNVERIFIED from the build environment (see
+    agents/middle_east/sources.py's module comment) — this is the first
+    real network confirmation of the endpoint path, so a FAIL here is
+    expected to be informative, not surprising."""
+    try:
+        resp = httpx.get(ASAM_API_BASE, params={"output": "json"}, timeout=timeout, follow_redirects=True)
+        resp.raise_for_status()
+        parsed = resp.json()
+    except Exception as exc:
+        return False, f"HTTP fetch failed: {exc} — endpoint/params in sources.py may need updating"
+    count = len(parsed) if isinstance(parsed, list) else "unknown shape"
+    return True, f"msi.nga.mil/api/publications/asam reachable, returned {count} record(s) (verify field names manually)"
+
+
 def main() -> int:
     cfg = yaml.safe_load(SOURCES_PATH.read_text())
     # status per result: "OK" | "FAIL" — no more "SKIPPED" case since
@@ -88,6 +103,9 @@ def main() -> int:
 
     ok, detail = _check_gdelt()
     results.append(("GDELT", "OK" if ok else "FAIL", detail))
+
+    ok, detail = _check_asam()
+    results.append(("NGA ASAM (shipping)", "OK" if ok else "FAIL", detail))
 
     for feed in cfg.get("rss_feeds", []):
         ok, detail = _check_rss(feed["name"], feed["url"])

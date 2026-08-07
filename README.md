@@ -7,7 +7,8 @@ and email delivery. See the full build spec for later phases.
 ## Architecture (this phase)
 
 ```
-Stage 1  INGEST         agents/middle_east/{sources.py,ingest.py}   GDELT (direct 15-min export files) + RSS
+Stage 1  INGEST         agents/middle_east/{sources.py,ingest.py}   GDELT (direct 15-min export files),
+                                                                    NGA/MSI ASAM (maritime incidents) + RSS
 Stage 2a SEEN/DEDUP      store (seen_urls) + pipeline/dedup.py      already-seen URL filter, exact URL dedup,
                                                                     then local embeddings (all-MiniLM-L6-v2)
 Stage 2b TRIAGE          pipeline/triage.py                         local Ollama (qwen2.5:7b) — no API call
@@ -15,10 +16,27 @@ Stage 2c PREDICTION RES. pipeline/predictions.py                    local Ollama
 Stage 3  MEMORY QUERY    pipeline/memory.py                         Chroma + SQLite; dormancy sweep, track record
 Stage 3b OIL SNAPSHOT    pipeline/oil_prices.py                     EIA API — WTI/Brent spot prices, free, optional
 Stage 3c SATELLITE HOTSPOTS pipeline/satellite_hotspots.py          NASA FIRMS — thermal anomalies, free, optional
+Stage 3d CRS REPORTS     pipeline/crs_reports.py                    Congress.gov API — CRS report summaries, free, optional
+Stage 3e ODNI EXCERPT    pipeline/odni_assessment.py                local file, manually curated, optional
 Stage 4  DEEP ANALYSIS   pipeline/analyze.py                        Claude Sonnet 5, adaptive thinking — the ONLY API call
 Stage 5  WRITE-BACK      pipeline/memory.py, pipeline/render.py,    SQLite/Chroma write-back, Markdown briefing,
          + DELIVERY      pipeline/deliver.py                        Gmail SMTP delivery
 ```
+
+### Briefing structure (changed 2026-08-06)
+
+The daily briefing is organized **country-by-country / relationship-by-
+relationship**, not as a fixed sequence of narrative sections. Each day's
+body has one section per country/actor (e.g. "Iran — domestic") or per
+bilateral relationship (e.g. "Israel — Hezbollah / Lebanon", "Iran — Gulf
+States") — whichever the day's news actually calls for, ordered by
+consequence, with no filler for quiet actors. A BLUF opens the brief and a
+single "What to watch" list closes it. See `prompts/analysis_system.md`
+for the full spec; the underlying analytic tradecraft (source tiering,
+calibrated probability language, hop-limited inference, competing
+hypotheses on the day's key ambiguity) is unchanged from before — only the
+output shape and how much of that process gets narrated to the reader
+changed (less of the latter).
 
 ## Setup
 
@@ -34,7 +52,8 @@ slowdowns and silent data loss to timeouts). Whichever you use, set
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in ANTHROPIC_API_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, EIA_API_KEY, FIRMS_MAP_KEY
+cp .env.example .env   # fill in ANTHROPIC_API_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD,
+                        # EIA_API_KEY, FIRMS_MAP_KEY, CONGRESS_API_KEY
 ```
 
 Make sure Ollama is running (`ollama serve`, or the background service) before
@@ -60,6 +79,37 @@ normally — it just omits the hotspots section. **Read the caveat in
 `pipeline/satellite_hotspots.py`'s module docstring before trusting this**:
 it detects heat, not confirmed strikes, and this region's routine gas
 flaring will show up in it constantly.
+
+For shipping/maritime-security data (optional, added 2026-08-06): no
+setup needed beyond `config/sources.yaml`'s `asam:` block — NGA's
+Anti-Shipping Activity Messages (attacks, hijackings, and other hostile
+acts against shipping) are free, official, and need no API key. UKMTO
+itself publishes no usable public feed (its advisories archive is empty
+for 2025/2026, no RSS or API), so this is the closest real equivalent —
+in fact the same underlying government dataset private repackagers like
+Dryad Global build on top of. **UNVERIFIED from the environment this was
+built in** (same caveat as GDELT/RSS originally) — run
+`python scripts/verify_sources.py` to confirm the endpoint resolves from
+your machine before trusting it.
+
+For Congressional Research Service (CRS) report summaries (optional,
+added 2026-08-06) — the closest legitimate, regularly-published, publicly
+fetchable equivalent to "actual intelligence reports" (real CIA/MI6
+products are classified and never hit a public feed; CRS is Congress's
+own nonpartisan research arm, staffed in part by former IC analysts):
+register for a free key at
+[api.data.gov/signup](https://api.data.gov/signup/) (no credit card) and
+set `CONGRESS_API_KEY`. If unset, the pipeline still runs normally — it
+just omits the CRS section. **UNVERIFIED from this build environment**
+(api.congress.gov blocked, same as every other external source here).
+
+For the ODNI Annual Threat Assessment excerpt (optional, added
+2026-08-06): no API key — this is a **manually curated file**
+(`config/odni_ata_excerpt.md`), not a live fetch, since the ATA is
+published once a year as a PDF with no feed. It ships with a placeholder
+and is omitted from the prompt until you fill it in — see that file's
+header comment for exactly how (this pipeline deliberately never
+fabricates ODNI assessment language to fill the gap).
 
 ## Running
 

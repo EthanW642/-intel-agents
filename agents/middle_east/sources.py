@@ -314,6 +314,156 @@ def fetch_gdelt(cfg: dict) -> list[RawItem]:
     return items
 
 
+ASAM_API_BASE = "https://msi.nga.mil/api/publications/asam"
+# UNVERIFIED from this build environment: msi.nga.mil is blocked by this
+# sandbox's network egress policy (the same situation GDELT/RSS were in
+# before their endpoints were confirmed live from a real machine) — the
+# endpoint path and field names below are built from NGA's published API
+# conventions for its /api/publications/* family (the same backend the
+# official ASAM mobile apps use), not confirmed against a live response.
+# Run `python scripts/verify_sources.py` on a machine with real network
+# access before trusting this.
+#
+# Filtering is deliberately done entirely CLIENT-SIDE (bbox + lookback,
+# same pattern as pipeline/satellite_hotspots.py) rather than relying on
+# exact server-side query-parameter names, since those aren't confirmed
+# either — a wrong param name would otherwise silently return the wrong
+# (or unfiltered) data with no error. ASAM's total record volume is small
+# (a global feed of active hostile-act reports, not GDELT-scale), so
+# fetching broadly and filtering locally is cheap and far more robust than
+# guessing server-side filter syntax.
+ASAM_FIELD_CANDIDATES = {
+    "reference": ["reference", "id", "msgNumber", "referenceNumber"],
+    "date": ["date", "dateOfOccurrence", "occurDate", "dtg", "dateOccurred"],
+    "latitude": ["latitude", "lat"],
+    "longitude": ["longitude", "lon", "lng"],
+    "description": ["description", "desc", "subreg", "text", "notes"],
+    "hostility": ["hostility", "hostilityType", "type", "category"],
+    "navArea": ["navArea", "navarea", "region", "geographicArea"],
+}
+# west, south, east, north — covers the Red Sea, Bab-el-Mandeb, the Gulf
+# of Aden, the Gulf/Strait of Hormuz, and the Arabian Sea approach to it.
+# Wider south than pipeline/satellite_hotspots.py's Middle East box since
+# Gulf-of-Aden/Somali-basin piracy activity (relevant to Bab-el-Mandeb
+# transit risk) sits further south than the strike-zone hotspot box needs.
+ASAM_BBOX_DEFAULT = (20.0, 8.0, 65.0, 32.0)
+
+
+def _asam_field(row: dict, attr: str) -> str | None:
+    lower_row = {str(k).lower(): v for k, v in row.items()}
+    for candidate in ASAM_FIELD_CANDIDATES[attr]:
+        val = lower_row.get(candidate.lower())
+        if val not in (None, ""):
+            return val
+    return None
+
+
+def _asam_date_to_iso(raw: str | None) -> tuple[str | None, datetime | None]:
+    """Best-effort parse of whatever date format the live API actually
+    returns. Returns (iso_string_or_None, datetime_or_None) — the caller
+    keeps items with an unparseable date (fail open, same as RSS) rather
+    than dropping them."""
+    if not raw:
+        return None, None
+    raw = str(raw).strip()
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y%m%d"):
+        try:
+            dt = datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
+            return dt.date().isoformat(), dt
+        except ValueError:
+            continue
+    return raw[:10] if len(raw) >= 10 else raw, None
+
+
+def _asam_response_to_rows(parsed) -> list[dict]:
+    """Defensively unwrap whatever envelope shape the live API uses — a
+    bare list, or a dict wrapping the list under a common key name."""
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict):
+        for key in ("asam", "data", "results", "records"):
+            value = parsed.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
+def _asam_row_to_item(
+    row: dict, bbox: tuple[float, float, float, float]
+) -> tuple[RawItem, datetime | None] | None:
+    desc = _asam_field(row, "description")
+    if not desc:
+        return None
+
+    lat_raw, lon_raw = _asam_field(row, "latitude"), _asam_field(row, "longitude")
+    try:
+        lat, lon = float(lat_raw), float(lon_raw)
+    except (TypeError, ValueError):
+        return None
+    west, south, east, north = bbox
+    if not (west <= lon <= east and south <= lat <= north):
+        return None
+
+    reference = _asam_field(row, "reference") or ""
+    hostility = _asam_field(row, "hostility") or "unspecified"
+    nav_area = _asam_field(row, "navArea") or ""
+    published_iso, published_dt = _asam_date_to_iso(_asam_field(row, "date"))
+
+    title = f"ASAM: {hostility}" + (f" — {nav_area}" if nav_area else "")
+    return RawItem(
+        title=title,
+        source="NGA-ASAM",
+        url=f"{ASAM_API_BASE}/{reference}" if reference else ASAM_API_BASE,
+        published=published_iso or datetime.now(timezone.utc).date().isoformat(),
+        text=str(desc)[:600],
+        # Tier 1 (structured/primary) — a confirmed hostile-act report,
+        # same evidentiary class as GDELT and the oil price snapshot.
+        raw_metadata={"tier": 1, "lat": lat, "lon": lon, "hostility": hostility},
+    ), published_dt
+
+
+def fetch_asam(cfg: dict, timeout: float = 20.0) -> list[RawItem]:
+    """Fetch NGA/MSI Anti-Shipping Activity Messages — attacks, hijackings,
+    and other hostile acts against shipping — filtered to the Middle
+    East/chokepoint bounding box and lookback window, entirely client-side
+    (see the module-level comment above for why)."""
+    bbox = tuple(cfg.get("bbox", ASAM_BBOX_DEFAULT))
+    lookback_days = cfg.get("lookback_days", 3)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+
+    try:
+        resp = httpx.get(ASAM_API_BASE, params={"output": "json"}, timeout=timeout, follow_redirects=True)
+        resp.raise_for_status()
+        rows = _asam_response_to_rows(resp.json())
+    except Exception:
+        logger.exception("Failed to fetch/parse NGA ASAM data — skipping this run")
+        return []
+
+    if not rows:
+        logger.warning("NGA ASAM returned 0 records — check the response shape against ASAM_FIELD_CANDIDATES")
+        return []
+
+    items: list[RawItem] = []
+    for row in rows:
+        result = _asam_row_to_item(row, bbox)
+        if result is None:
+            continue
+        item, published_dt = result
+        if published_dt is not None and published_dt < cutoff:
+            continue
+        items.append(item)
+    if not items and rows:
+        logger.warning(
+            "NGA ASAM returned %d record(s) but none matched the expected field shape "
+            "(lat/lon/description) — the live response format likely differs from "
+            "ASAM_FIELD_CANDIDATES in sources.py; update it against a real response.",
+            len(rows),
+        )
+    else:
+        logger.info("NGA ASAM: %d records fetched -> %d in region/window", len(rows), len(items))
+    return items
+
+
 def _entry_published_iso(entry) -> tuple[str, datetime | None]:
     """Return (iso_string, datetime) for a feedparser entry, falling back to
     the raw feed string (and None) when no parseable date is provided —

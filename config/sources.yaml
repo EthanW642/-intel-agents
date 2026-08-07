@@ -95,6 +95,28 @@ gdelt:
   min_num_mentions: 10
   min_abs_goldstein: 5.0  # GoldsteinScale runs -10..+10; 5 = a clearly significant event, not routine chatter
 
+asam:
+  # NGA/MSI Anti-Shipping Activity Messages — attacks, hijackings, and
+  # other hostile acts against shipping. Tier 1 (structured/primary), same
+  # evidentiary class as GDELT. Added 2026-08-06 for shipping-route/
+  # maritime-security coverage (UKMTO itself publishes no usable feed — its
+  # advisories archive is empty for 2025/2026 and there's no RSS/API; NGA's
+  # ASAM is the closest real, free, official public source, and is in fact
+  # the same underlying government dataset private repackagers like Dryad
+  # Global build on top of).
+  #
+  # UNVERIFIED from this build environment — msi.nga.mil is blocked by this
+  # sandbox's network egress, same situation GDELT/RSS were in before their
+  # endpoints were confirmed live. Run `python scripts/verify_sources.py`
+  # before relying on this; agents/middle_east/sources.py::fetch_asam does
+  # all filtering client-side specifically so a wrong endpoint/param
+  # assumption fails safe (empty result, logged warning) rather than
+  # silently returning the wrong data.
+  lookback_days: 3
+  # west, south, east, north — Red Sea, Bab-el-Mandeb, Gulf of Aden, the
+  # Gulf/Strait of Hormuz, and the Arabian Sea approach to it.
+  bbox: [20.0, 8.0, 65.0, 32.0]
+
 # Drop RSS entries older than this many days at ingest (entries with no
 # parseable date are kept and left for triage). Most feeds re-serve their
 # full recent archive on every request; combined with the seen_urls store

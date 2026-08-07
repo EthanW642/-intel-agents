@@ -297,3 +297,29 @@ def test_build_user_prompt_hotspots_handles_missing_frp():
     prompt = _build_user_prompt([], MEMORY_CONTEXT, hotspots=hotspots)
     assert "31.50, 34.50" in prompt
     assert "FRP" not in prompt.split("31.50, 34.50")[1].split("\n")[0]
+
+
+def test_build_user_prompt_omits_crs_section_when_none():
+    prompt = _build_user_prompt([], MEMORY_CONTEXT, crs_snapshot=None)
+    assert "Congressional Research Service" not in prompt
+
+
+def test_build_user_prompt_includes_crs_section_when_present():
+    crs_snapshot = [
+        {"title": "Iran Sanctions: Overview", "summary": "Discusses US sanctions policy.", "publish_date": "2026-07-15", "url": "https://example.com"},
+    ]
+    prompt = _build_user_prompt([], MEMORY_CONTEXT, crs_snapshot=crs_snapshot)
+    assert "Congressional Research Service" in prompt
+    assert "Iran Sanctions: Overview" in prompt
+    assert "2026-07-15" in prompt
+
+
+def test_build_user_prompt_omits_odni_section_when_none():
+    prompt = _build_user_prompt([], MEMORY_CONTEXT, odni_excerpt=None)
+    assert "ODNI" not in prompt
+
+
+def test_build_user_prompt_includes_odni_section_when_present():
+    prompt = _build_user_prompt([], MEMORY_CONTEXT, odni_excerpt="Iran remains a persistent regional threat.")
+    assert "ODNI Annual Threat Assessment" in prompt
+    assert "Iran remains a persistent regional threat." in prompt
